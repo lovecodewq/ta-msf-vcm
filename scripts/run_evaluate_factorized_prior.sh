@@ -1,0 +1,1 @@
+python src/evaluation/evaluate_factorized_prior.py --checkpoint_dir checkpoints/factorized_prior --test_data data/processed/kitti/test.txt --output_dir evaluation_results/factorized_prior

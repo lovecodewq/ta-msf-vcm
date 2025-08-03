@@ -1,0 +1,1 @@
+python src/evaluation/evaluate_detection.py --detection_model checkpoints/detection/run_0.002000_16/best_model.pth --compression_checkpoint checkpoints/factorized_prior/model_lambda_0.100.pth --data_dir data/processed/kitti/

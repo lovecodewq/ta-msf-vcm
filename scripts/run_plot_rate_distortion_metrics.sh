@@ -1,0 +1,3 @@
+# note: the input file is the evaluation results file from the evaluate_factorized_prior.py script
+# so if you have not run the evaluate_factorized_prior.py script, you need to run it first
+python src/evaluation/plot_rate_distortion_metrics.py --input_file evaluation_results/factorized_prior/evaluation_results.txt --output_dir evaluation_results/factorized_prior --output_name rate_distortion_curves.png

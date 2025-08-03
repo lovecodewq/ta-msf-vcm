@@ -1,0 +1,96 @@
+# Factorized Prior Model Configuration
+model:
+  name: "factorized_prior"
+  n_hidden: 128  # Number of hidden channels in analysis/synthesis transforms
+  n_channels: 192  # Number of channels in latent representation
+
+# Data configuration
+data:
+  train_list: "data/processed/kitti/train.txt"
+  val_list: "data/processed/kitti/val.txt"
+  test_list: "data/processed/kitti/test.txt"
+  
+  # Transform configuration
+  transforms:
+    resize:
+      enabled: false  # Only enable if needed
+      size: 256
+    
+    crop:
+      enabled: true
+      size: 256  # Size of crops during training
+    
+    flip:
+      enabled: true
+      probability: 0.5
+    
+    color_jitter:
+      enabled: false  # Disabled by default for compression tasks
+      brightness: 0.2
+      contrast: 0.2
+      saturation: 0.2
+      hue: 0.1
+  
+  # Transform configuration for testing/validation
+  test_transforms:
+    resize:
+      enabled: true  # Enable resize for consistent validation sizes
+      size: [256, 256]  # Fixed size for validation
+    
+    crop:
+      enabled: false  # No cropping during testing
+      size: 256
+    
+    flip:
+      enabled: false  # No augmentation during testing
+      probability: 0.5
+    
+    color_jitter:
+      enabled: false
+      brightness: 0.2
+      contrast: 0.2
+      saturation: 0.2
+      hue: 0.1
+
+# Training configuration
+training:
+  batch_size: 16
+  epochs: 1000  # Train for longer as per paper
+  learning_rate: 1e-4  # Adam learning rate
+  lambda: 0.1  # Rate-distortion trade-off parameter
+                # Train multiple models with different lambda values:
+                # - 0.001 (high quality, high bitrate)
+                # - 0.003
+                # - 0.01  (medium quality and bitrate)
+                # - 0.03
+                # - 0.1   (low quality, low bitrate)
+  num_workers: 4
+  log_interval: 100  # How often to log training progress
+  save_dir: "checkpoints/factorized_prior"
+  
+  # Optimization settings
+  optimizer:
+    type: "Adam"
+    betas: [0.9, 0.999]  # Default Adam betas
+    eps: 1e-8  # Default Adam epsilon
+    weight_decay: 0  # No weight decay as per paper
+  
+  # Learning rate schedule
+  lr_schedule:
+    enabled: true
+    type: "plateau"  # Reduce LR on plateau
+    patience: 10  # Number of epochs to wait before reducing LR
+    factor: 0.5  # Factor to reduce LR by
+    min_lr: 1e-6  # Minimum learning rate
+    
+  # Early stopping
+  early_stopping:
+    enabled: true
+    patience: 20  # Stop if no improvement for 20 epochs
+    min_delta: 1e-5  # Minimum change to qualify as an improvement
+
+# Validation settings
+validation:
+  interval: 1  # Validate every epoch
+  save_reconstructions: true  # Save sample reconstructions
+  num_samples: 4  # Number of samples to save 
