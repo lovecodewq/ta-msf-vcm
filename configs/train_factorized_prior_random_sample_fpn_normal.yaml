@@ -1,0 +1,117 @@
+# Single Model FPN Feature Compression Configuration
+# This config trains one FactorizedPrior model on randomly sampled FPN levels
+
+model:
+  name: "factorized_prior_random_level_normal"
+  n_hidden: 128  # Number of hidden channels in analysis/synthesis transforms  
+  n_channels: 192  # Number of channels in latent representation
+  fpn_channels_per_level: 256  # Number of channels per FPN level (standard for ResNet50 FPN)
+
+# Data configuration
+data:
+  train_list: "data/processed/kitti/train.txt"
+  val_list: "data/processed/kitti/val.txt"
+  test_list: "data/processed/kitti/test.txt"
+  
+  # Transform configuration for input images (before FPN extraction)
+  transforms:
+    resize:
+      enabled: true
+      size: [384, 1280]  # Standard size for FPN extraction
+    
+    crop:
+      enabled: false  # No cropping - use full images for FPN
+      size: 256
+    
+    flip:
+      enabled: false  # Disable augmentation for more stable FPN features
+      probability: 0.5
+    
+    color_jitter:
+      enabled: false  # Disabled for compression tasks
+      brightness: 0.2
+      contrast: 0.2
+      saturation: 0.2
+      hue: 0.1
+      
+    normalize:
+      enabled: true
+      mean: [0.485, 0.456, 0.406]  # ImageNet normalization for detection model
+      std: [0.229, 0.224, 0.225]
+  
+  # Transform configuration for testing/validation
+  test_transforms:
+    resize:
+      enabled: true
+      size: [384, 1280]  # Same as training for consistency
+    
+    crop:
+      enabled: false
+      size: 256
+    
+    flip:
+      enabled: false
+      probability: 0.5
+    
+    color_jitter:
+      enabled: false
+      brightness: 0.2
+      contrast: 0.2
+      saturation: 0.2
+      hue: 0.1
+      
+    normalize:
+      enabled: true
+      mean: [0.485, 0.456, 0.406]
+      std: [0.229, 0.224, 0.225]
+
+# Training configuration
+training:
+  batch_size: 8  # Smaller batch size due to FPN feature extraction overhead
+  epochs: 100  # Shorter training since we're training per level
+  learning_rate: 1e-4  # Lower learning rate for fine-tuning on features
+  lambda: 0.1  # Rate-distortion trade-off parameter
+                 # Options: 0.0001, 0.0005, 0.001, 0.005, 0.01
+  num_workers: 4
+  log_interval: 10  # Log more frequently for monitoring
+  save_dir: "checkpoints/fpn_random_level_compression_normal"
+  
+  # Optimization settings
+  optimizer:
+    type: "Adam"
+    betas: [0.9, 0.999]
+    eps: 1e-8
+    weight_decay: 1e-4  # Small weight decay for regularization
+  
+  # Learning rate schedule
+  lr_schedule:
+    enabled: true
+    type: "plateau"
+    patience: 5  # Reduce LR more aggressively
+    factor: 0.8  # Smaller reduction factor
+    min_lr: 1e-6
+    
+  # Early stopping
+  early_stopping:
+    enabled: true
+    patience: 15  # Stop earlier since we're training individual levels
+    min_delta: 1e-6
+
+# Validation settings
+validation:
+  interval: 5  # Validate every 5 epochs
+  save_reconstructions: true  # Save feature analysis
+  num_samples: 4  # Number of samples to analyze
+
+# Experiment configuration
+experiment:
+  name: "fpn_random_level_compression_normal"
+  description: "Training single FactorizedPrior model with random FPN level sampling. This approach trains one model that handles all FPN levels by randomly selecting which level to use for each training sample."
+  notes: |
+    - Single model handles all FPN levels (0-4) 
+    - Random level selection during training for robustness
+    - Input/output: 256 channels (FPN feature channels)
+    - All levels have same channel count, only spatial differences
+    - Channel-wise parameters (GDN, entropy bottleneck) shared across levels
+    - Much more efficient than training separate models per level
+    - Model learns general FPN feature compression patterns

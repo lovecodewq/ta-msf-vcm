@@ -147,3 +147,38 @@ def save_best_model(save_dir, epoch, model, optimizer, scheduler, best_loss, con
     torch.save(checkpoint, best_model_link)
     
     return checkpoint_path
+
+
+def get_lambda_from_checkpoint(checkpoint_path):
+    """Extract lambda value from compression model checkpoint path.
+    
+    Handles two formats:
+    1. Image compression: model_lambda_0.010.pth
+    2. Feature compression: run_20250807_000250_lambda_5.00e-01_lr_1.00e-04_bs_8/best_model_epoch_11_loss_0.0229_20250807_003803.pth
+    """
+    path = Path(checkpoint_path)
+    try:
+        # Check if this is a feature compression checkpoint (has run_ prefix and contains lr)
+        if 'run_' in str(path) and 'lr' in str(path):
+            # Split the path into parts and find the lambda value
+            parts = str(path).split('_')
+            for i, part in enumerate(parts):
+                if part == 'lambda' and i + 1 < len(parts):
+                    # Convert scientific notation (e.g., 5.00e-01) to float
+                    lambda_str = parts[i + 1]
+                    logging.info(f'Found feature compression lambda: {lambda_str}')
+                    return float(lambda_str)
+        
+        # Image compression format (model_lambda_X.XXX.pth)
+        if path.stem.startswith('model_lambda'):
+            lambda_str = path.stem.split('_')[-1]
+            logging.info(f'Found image compression lambda: {lambda_str}')
+            return float(lambda_str)
+            
+        logging.warning(f'Unrecognized checkpoint format: {checkpoint_path}')
+        logging.warning(f'Path parts: {str(path).split("_")}')
+        return None
+    except (IndexError, ValueError) as e:
+        logging.warning(f'Failed to extract lambda from {checkpoint_path}: {str(e)}')
+        logging.warning(f'Path parts: {str(path).split("_")}')
+        return None
