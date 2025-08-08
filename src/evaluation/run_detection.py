@@ -158,6 +158,7 @@ def main():
     parser.add_argument('--output_json', type=str, required=True)
     parser.add_argument('--manifest_out', type=str, default=None, help='Optional path to write a manifest.json summarizing outputs')
     parser.add_argument('--log_level', type=str, default='INFO')
+    parser.add_argument('--debug_shapes', action='store_true', help='Log detailed sizes for images and features')
     args = parser.parse_args()
 
     logging.basicConfig(level=getattr(logging, args.log_level.upper(), logging.INFO), format='%(asctime)s - %(levelname)s - %(message)s')
@@ -177,7 +178,9 @@ def main():
         args.data_dir,
         split='test',
         transform=to_tensor_only,
-        override_image_dir=override_dir
+        override_image_dir=override_dir,
+        debug_transforms=True,
+        debug_samples=3
     )
 
     data_loader = DataLoader(
@@ -195,7 +198,7 @@ def main():
     features_dir = Path(args.features_dir) if args.mode == 'reconstructed_features' else None
 
     with torch.no_grad():
-        for images, targets in tqdm(data_loader, desc=f'Detecting ({args.mode})'):
+        for batch_idx, (images, targets) in enumerate(tqdm(data_loader, desc=f'Detecting ({args.mode})')):
             images = [img.to(device) for img in images]
             image_ids = [t.get('image_id') for t in targets]
 
@@ -204,6 +207,10 @@ def main():
                     raise ValueError('features_dir must be provided for mode=reconstructed_features')
                 feats_batched = load_features_for_batch(features_dir, image_ids)
                 feats_batched = {k: v.to(device) for k, v in feats_batched.items()}
+                if args.debug_shapes and batch_idx < 5:
+                    sizes = [tuple(img.shape[-2:]) for img in images]
+                    feat_sizes = {k: tuple(v.shape[-2:]) for k, v in feats_batched.items()}
+                    logging.info(f"[DEBUG] det batch {batch_idx} image_sizes={sizes} feature_sizes={feat_sizes}")
                 predictions = model.forward_from_features(images, feats_batched)
             else:
                 predictions = model(images)

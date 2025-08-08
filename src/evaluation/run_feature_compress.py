@@ -36,6 +36,7 @@ def main():
     parser.add_argument('--batch_size', type=int, default=8)
     parser.add_argument('--num_workers', type=int, default=8)
     parser.add_argument('--log_level', type=str, default='INFO')
+    parser.add_argument('--debug_shapes', action='store_true', help='Log detailed image/feature shapes for debugging')
     args = parser.parse_args()
 
     logging.basicConfig(level=getattr(logging, args.log_level.upper(), logging.INFO), format='%(asctime)s - %(levelname)s - %(message)s')
@@ -64,11 +65,14 @@ def main():
         comp_model.update(force=True)
     comp_model.eval()
 
-    # Build transforms to match training/test of feature compressor (ensures stackable dims and consistency)
-    test_tf_cfg = comp_ckpt['config']['data']['test_transforms']
-    image_tf = create_transforms(test_tf_cfg, split='val')
-
-    dataset = KITTIDetectionDataset(args.data_dir, split='test', transform=image_tf)
+    # Best practice for feature path: no external resize/normalize; let model transform handle it
+    dataset = KITTIDetectionDataset(
+        args.data_dir,
+        split='test',
+        transform=to_tensor_only,
+        debug_transforms=True,
+        debug_samples=3
+    )
     loader = DataLoader(dataset, batch_size=args.batch_size, shuffle=False, num_workers=args.num_workers, collate_fn=collate_fn, pin_memory=True)
 
     out_root = Path(args.output_dir)
@@ -80,12 +84,11 @@ def main():
     per_image_stats = []
 
     with torch.no_grad():
-        for images, targets in tqdm(loader, desc='Compressing & reconstructing features'):
+        for batch_idx, (images, targets) in enumerate(tqdm(loader, desc='Compressing & reconstructing features')):
             images = [img.to(device) for img in images]
-            batch = torch.stack(images, dim=0)
 
             # Extract FPN features for the batch
-            fpn_features = det_model.get_fpn_features(batch)
+            fpn_features = det_model.get_fpn_features(images)
             # Keep p2..p6 order in a list as expected by compressor
             features_list = [
                 fpn_features['p2'],
@@ -98,13 +101,17 @@ def main():
             # P2 dims for decompress API (batch spatial dims)
             p2_h, p2_w = fpn_features['p2'].shape[-2:]
 
+            if args.debug_shapes and batch_idx < 5:
+                img_sizes = [tuple(img.shape[-2:]) for img in images]
+                feat_sizes = {k: tuple(v.shape[-2:]) for k, v in fpn_features.items()}
+                logging.info(f"[DEBUG] batch {batch_idx} image_sizes={img_sizes} p2..p6={feat_sizes} p2_hw={(p2_h,p2_w)}")
+
             # Compress and decompress the whole batch
             compressed = comp_model.compress(features_list)
             decompressed = comp_model.decompress(compressed['strings'], p2_h, p2_w)
             recon_features_list = decompressed['features']  # list [p2..p6], each tensor shaped (N, C, H, W)
 
-            # Compute per-image BPP from serialized file size for fidelity
-            H, W = batch.shape[-2], batch.shape[-1]
+            # Compute per-image BPP from serialized file size for fidelity (use original per-image size)
             y_strings, z_strings = compressed['strings']
 
             # Save per image reconstructed features as .pt dicts
@@ -131,6 +138,7 @@ def main():
                     bf.write(y_bytes)
                     bf.write(z_bytes)
                 bits_file = os.path.getsize(bin_path) * 8
+                H, W = images[i].shape[-2], images[i].shape[-1]
                 per_image_stats.append({
                     'image_id': image_id,
                     'bpp': float(bits_file) / float(H * W),
@@ -139,6 +147,10 @@ def main():
                     'bit_z': int(len(z_bytes) * 8),
                     'bitstream_path': str(bin_path)
                 })
+
+            if args.debug_shapes and batch_idx < 5:
+                sizes = [tuple(img.shape[-2:]) for img in images]
+                logging.info(f"[DEBUG] batch {batch_idx} y_bits={[len(y)*8 for y in y_strings]} z_bits={[len(z)*8 for z in z_strings]} per_image_sizes={sizes}")
 
     meta = {
         'mode': 'feature_compression',

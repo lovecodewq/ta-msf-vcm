@@ -29,9 +29,7 @@ from utils.training_utils import (
 
 from utils.fpn_dataset import FPNDataset
 from model.joint_autoregress_fpn_compressor import JointAutoregressFPNCompressor
-from model.criterion import compute_rate_distortion_loss
-
-
+from utils.metrics import compute_rate_distortion_loss
 
 
 def train_one_epoch(model, train_loader, optimizer, lmbda, device, log_interval, detection_model):

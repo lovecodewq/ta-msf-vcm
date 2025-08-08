@@ -13,7 +13,7 @@ from PIL import Image
 from data.kitti_dataset import KITTIDetectionDataset
 
 
-def draw_boxes(ax, img_np, preds, threshold: float = 0.5, color_map: Dict[int, str] = None, title: str = ''):
+def draw_boxes(ax, img_np, preds, gt=None, threshold: float = 0.5, color_map: Dict[int, str] = None, title: str = ''):
     ax.imshow(img_np)
     ax.set_title(title)
     if preds is not None:
@@ -27,6 +27,17 @@ def draw_boxes(ax, img_np, preds, threshold: float = 0.5, color_map: Dict[int, s
             rect = patches.Rectangle((x1, y1), x2-x1, y2-y1, linewidth=2, edgecolor=(color_map or {}).get(label, 'r'), facecolor='none')
             ax.add_patch(rect)
             ax.text(x1, max(0, y1-5), f"{KITTIDetectionDataset.CLASSES[label-1]} {score:.2f}", color=(color_map or {}).get(label, 'r'), bbox=dict(facecolor='white', alpha=0.8))
+    # Optional GT overlay in green
+    if gt is not None and 'boxes' in gt and len(gt['boxes']):
+        gt_boxes = np.array(gt['boxes'])
+        gt_labels = np.array(gt.get('labels', []))
+        for i, box in enumerate(gt_boxes):
+            x1, y1, x2, y2 = box
+            rect = patches.Rectangle((x1, y1), x2-x1, y2-y1, linewidth=2, edgecolor='g', facecolor='none', linestyle='--')
+            ax.add_patch(rect)
+            if gt_labels.size:
+                lbl = int(gt_labels[i])
+                ax.text(x1, y1, f"GT {KITTIDetectionDataset.CLASSES[lbl-1]}", color='g', bbox=dict(facecolor='white', alpha=0.6))
     ax.axis('off')
 
 
@@ -84,10 +95,15 @@ def main():
     # Build lookup
     def to_map(d):
         return {item['image_id']: item for item in d['predictions']}
+    def to_tgt_map(d):
+        return {item['image_id']: item for item in d['targets']}
 
     raw_map = to_map(raw)
     img_map = to_map(img)
     feat_map = to_map(feat)
+    raw_tgt_map = to_tgt_map(raw)
+    img_tgt_map = to_tgt_map(img)
+    feat_tgt_map = to_tgt_map(feat)
 
     # BPP lookups
     bpp_img = {s['image_id']: s['bpp'] for s in meta_img['stats']}
@@ -118,9 +134,10 @@ def main():
         img_np_rec = np.array(pil_rec)
 
         fig, (ax1, ax2, ax3) = plt.subplots(1, 3, figsize=(24, 8))
-        draw_boxes(ax1, img_np_raw, raw_map.get(image_id), title='Raw')
-        draw_boxes(ax2, img_np_rec, img_map.get(image_id), title=f'Image comp (BPP {bpp_img.get(image_id, float("nan")):.3f})')
-        draw_boxes(ax3, img_np_rec, feat_map.get(image_id), title=f'Feature comp (BPP {bpp_feat.get(image_id, float("nan")):.3f})')
+        draw_boxes(ax1, img_np_raw, raw_map.get(image_id), gt=raw_tgt_map.get(image_id), title='Raw')
+        draw_boxes(ax2, img_np_rec, img_map.get(image_id), gt=img_tgt_map.get(image_id), title=f'Image comp (BPP {bpp_img.get(image_id, float("nan")):.4f})')
+        # Feature-comp predictions are in raw-image coordinate space; draw on raw image
+        draw_boxes(ax3, img_np_raw, feat_map.get(image_id), gt=raw_tgt_map.get(image_id), title=f'Feature comp (BPP {bpp_feat.get(image_id, float("nan")):.4f})')
         plt.tight_layout()
         fig.savefig(vis_dir / f'{image_id}.png', bbox_inches='tight', dpi=150)
         plt.close(fig)

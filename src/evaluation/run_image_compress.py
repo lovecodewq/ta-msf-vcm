@@ -63,15 +63,21 @@ def main():
         # Build a minimal transform: Resize -> ToTensor (no normalization)
         image_tf = T.Compose([T.Resize(force_resize), T.ToTensor()])
     else:
-        # Use checkpoint's test transforms; if resize disabled/missing, fall back to a safe size (e.g., 384x1280)
-        if not test_tf_cfg.get('resize', {}).get('enabled', False):
-            logging.warning('Checkpoint test_transforms.resize is disabled or missing; falling back to 384x1280')
-            image_tf = T.Compose([T.Resize((384, 1280)), T.ToTensor()])
+        # Prefer checkpoint's test transforms if present, else default to ToTensor only
+        if not test_tf_cfg or not test_tf_cfg.get('resize', {}).get('enabled', False):
+            logging.info('Using no-resize ToTensor() for image compression inputs (will compress at native size).')
+            image_tf = T.Compose([T.ToTensor()])
         else:
             image_tf = create_transforms(test_tf_cfg, split='val')
 
     # Dataset: resized tensors for stackable batches
-    dataset = KITTIDetectionDataset(args.data_dir, split='test', transform=image_tf)
+    dataset = KITTIDetectionDataset(
+        args.data_dir,
+        split='test',
+        transform=image_tf,
+        debug_transforms=True,
+        debug_samples=3
+    )
     loader = DataLoader(dataset, batch_size=args.batch_size, shuffle=False, num_workers=args.num_workers, collate_fn=collate_fn, pin_memory=True)
 
     out_root = Path(args.output_dir)
@@ -85,14 +91,18 @@ def main():
     with torch.no_grad():
         for images, targets in tqdm(loader, desc='Compressing & reconstructing images'):
             images_list = [img.to(device) for img in images]
-            batch = torch.stack(images_list, dim=0)
-            comp = model.compress(batch)
-            shape = comp['shape']
-            input_size = comp['input_size']
+            # Compress per image to support variable sizes without forced resize
+            # (FactorizedPrior.compress expects a batch; handle single images in a loop)
+            per_image_out = []
+            for img in images_list:
+                comp_i = model.compress(img.unsqueeze(0))
+                per_image_out.append(comp_i)
+            # No single shape: use per-image shape and input_size
 
             for i, (img, tgt) in enumerate(zip(images_list, targets)):
                 image_id = tgt.get('image_id')
-                y_bytes = comp['y_strings'][i]
+                comp_i = per_image_out[i]
+                y_bytes = comp_i['y_strings'][0]
                 bin_path = bin_out_dir / f'{image_id}.bin'
                 bin_path.write_bytes(y_bytes)
 
@@ -101,7 +111,7 @@ def main():
                 bpp = float(num_bits) / float(h * w)
 
                 # Decompress single image and save PNG
-                rec = model.decompress([y_bytes], shape, input_size)['x_hat'].squeeze(0).clamp(0, 1).cpu()
+                rec = model.decompress([y_bytes], comp_i['shape'], comp_i['input_size'])['x_hat'].squeeze(0).clamp(0, 1).cpu()
                 from torchvision.utils import save_image
                 png_path = img_out_dir / f'{image_id}.png'
                 save_image(rec, str(png_path))
