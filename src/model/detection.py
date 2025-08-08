@@ -47,7 +47,7 @@ class DetectionModel(nn.Module):
         
         Args:
             images: Input images
-            features: Pre-computed FPN features with string keys '0', '1', '2', '3', '4'
+            features: Pre-computed FPN features with string keys 'p2', 'p3', 'p4', 'p5', 'p6'
             targets: Ground truth targets (for training)
         """
         # Get original image sizes for proper scaling
@@ -58,11 +58,10 @@ class DetectionModel(nn.Module):
         
         # Transform images to get proper image list and sizes
         images, _ = self.model.transform(images)
-        
-        # Features should already be FPN features with string keys '0', '1', '2', etc.
-        if not all(isinstance(k, str) and k.isdigit() for k in features.keys()):
-            raise ValueError("Features must be FPN features with string keys '0', '1', '2', '3', '4'")
-        
+
+        # Convert FPN features to expected format (0-4), p2, p3, p4, p5, p6 -> 0, 1, 2, 3, 4
+        features = OrderedDict([(str(i), features[f'p{i+2}']) for i in range(5)])
+
         # Generate proposals
         proposals, proposal_losses = self.model.rpn(images, features, targets)
         
@@ -81,10 +80,12 @@ class DetectionModel(nn.Module):
             
         return detections
     
-    def get_fpn_features(self, images: List[torch.Tensor]) -> Dict[str, torch.Tensor]:
+    def get_fpn_features(self, images: torch.Tensor) -> Dict[str, torch.Tensor]:
         """Extract FPN features from images - ideal for compression and distributed inference."""
-        # Transform images
-        images, _ = self.model.transform(images)
+        # conver batched image tensor to list of images
+        with torch.no_grad():
+            image_list = [img for img in images]
+        images, _ = self.model.transform(image_list)
         
         # Extract backbone features (before FPN)
         x = images.tensors
@@ -111,14 +112,15 @@ class DetectionModel(nn.Module):
         
         # Apply FPN to get multi-scale features
         fpn_features = self.model.backbone.fpn(resnet_features)
-        
-        # Convert FPN features to expected format (0-4)
-        # FPN outputs: p2, p3, p4, p5, p6 -> 0, 1, 2, 3, 4
-        features = OrderedDict()
-        for idx, (_, feat) in enumerate(fpn_features.items()):
-            features[str(idx)] = feat
-            
-        return features
+        # convert feat1, feat2, feat3, feat4 to p2, p3, p4, p5
+        fpn_features = OrderedDict([
+            ('p2', fpn_features['feat1']),
+            ('p3', fpn_features['feat2']),
+            ('p4', fpn_features['feat3']),
+            ('p5', fpn_features['feat4']),
+            ('p6', fpn_features['pool'])
+        ])
+        return fpn_features
     
     def train(self, mode=True):
         """Sets the module in training mode."""

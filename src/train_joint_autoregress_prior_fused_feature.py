@@ -28,7 +28,7 @@ from utils.training_utils import (
 )
 
 from utils.fpn_dataset import FPNDataset
-from model.JointAutoregressFPNCompressor import JointAutoregressFPNCompressor
+from model.joint_autoregress_fpn_compressor import JointAutoregressFPNCompressor
 from model.criterion import compute_rate_distortion_loss
 
 
