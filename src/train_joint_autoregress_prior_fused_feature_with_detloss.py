@@ -17,9 +17,10 @@ import logging
 import torch
 import torch.optim as optim
 from torch.utils.data import DataLoader
+from tqdm import tqdm
 
 from data.kitti_dataset import KITTIDetectionDataset
-from data.transforms import create_transforms
+from data.transforms import create_transforms, create_detection_transforms
 from model.detection import DetectionModel
 from model.joint_autoregress_fpn_compressor import JointAutoregressFPNCompressor
 from utils.training_utils import (
@@ -42,14 +43,34 @@ def parse_args():
     return parser.parse_args()
 
 
-def build_dataloaders(config):
-    train_tf = create_transforms(config['data']['transforms'], split='train')
-    val_tf = create_transforms(config['data']['test_transforms'], split='val')
+def _to_tensor_only(image, target=None):
+    import torchvision.transforms.functional as F
+    if not isinstance(image, torch.Tensor):
+        image = F.to_tensor(image)
+    return image, target
 
-    train_set = KITTIDetectionDataset(config['data']['train_list'].rsplit('/', 1)[0].rsplit('/', 1)[0],
-                                      split='train', transform=train_tf)
-    val_set = KITTIDetectionDataset(config['data']['val_list'].rsplit('/', 1)[0].rsplit('/', 1)[0],
-                                    split='val', transform=val_tf)
+
+def build_dataloaders(config):
+    root_dir = config['data'].get('root_dir')
+    if not root_dir:
+        # fallback to derive root from lists: <root>/train.txt → <root>
+        any_list = config['data'].get('train_list') or config['data'].get('val_list')
+        if any_list:
+            root_dir = any_list.rsplit('/', 1)[0].rsplit('/', 1)[0]
+        else:
+            raise ValueError('Please provide data.root_dir in config')
+
+    use_ext = bool(config['data'].get('use_external_transforms', False))
+    if use_ext:
+        # Use detection-aware transforms that update targets (boxes) on flip; no external normalization
+        train_tf = create_detection_transforms(config['data']['transforms'], apply_normalization=False)
+        val_tf = create_detection_transforms(config['data']['test_transforms'], apply_normalization=False)
+    else:
+        train_tf = _to_tensor_only
+        val_tf = _to_tensor_only
+
+    train_set = KITTIDetectionDataset(root_dir, split='train', transform=train_tf)
+    val_set = KITTIDetectionDataset(root_dir, split='val', transform=val_tf)
 
     train_loader = DataLoader(train_set,
                               batch_size=config['training']['batch_size'],
@@ -71,7 +92,7 @@ def disable_parameter_grads(module: torch.nn.Module) -> None:
         p.requires_grad_(False)
 
 
-def train_one_epoch(model, det_model, optimizer, lmbda, det_w, device, loader, log_interval):
+def train_one_epoch(model, det_model, optimizer, lmbda, det_w, device, loader, log_interval, grad_clip_max_norm: float = 1.0):
     model.train()
     det_model.eval()
 
@@ -80,7 +101,7 @@ def train_one_epoch(model, det_model, optimizer, lmbda, det_w, device, loader, l
     det_meter = AverageMeter()
     ratio_meter = AverageMeter()
 
-    for batch_idx, (images, targets) in enumerate(loader):
+    for batch_idx, (images, targets) in enumerate(tqdm(loader, desc='Training', leave=False)):
         images = [img.to(device) for img in images]
         targets = [{k: v.to(device) if isinstance(v, torch.Tensor) else v for k, v in t.items()} for t in targets]
 
@@ -98,7 +119,8 @@ def train_one_epoch(model, det_model, optimizer, lmbda, det_w, device, loader, l
         rd_loss, rd_mse, rd_bpp = compute_rate_distortion_loss(out, clean_feats, lmbda, (len(images),) + images[0].shape)
 
         # Detection loss using reconstructed features
-        det_losses = det_model.forward_from_features(images, recon_feats, targets)
+        # Compute detection losses; must set model to training mode for losses to be produced
+        det_losses = det_model.compute_losses_from_features(images, recon_feats, targets)
         if isinstance(det_losses, dict):
             det_loss = sum(det_losses.values())
         else:
@@ -107,13 +129,14 @@ def train_one_epoch(model, det_model, optimizer, lmbda, det_w, device, loader, l
         total_loss = rd_loss + det_w * det_loss
         total_loss.backward()
 
-        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+        if grad_clip_max_norm and grad_clip_max_norm > 0:
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=grad_clip_max_norm)
         optimizer.step()
 
         loss_meter.update(float(total_loss))
         rd_meter.update(float(rd_loss))
         det_meter.update(float(det_loss))
-        ratio = float(det_loss) / (float(rd_loss) + 1e-8)
+        ratio = float(det_w) * float(det_loss) / (float(rd_loss) + 1e-8)
         ratio_meter.update(ratio)
 
         if batch_idx % log_interval == 0:
@@ -141,7 +164,7 @@ def validate(model, det_model, lmbda, det_w, device, loader):
     det_meter = AverageMeter()
     ratio_meter = AverageMeter()
 
-    for images, targets in loader:
+    for images, targets in tqdm(loader, desc='Validating', leave=False):
         images = [img.to(device) for img in images]
         targets = [{k: v.to(device) if isinstance(v, torch.Tensor) else v for k, v in t.items()} for t in targets]
 
@@ -150,7 +173,7 @@ def validate(model, det_model, lmbda, det_w, device, loader):
         recon_feats = out['features']
 
         rd_loss, rd_mse, rd_bpp = compute_rate_distortion_loss(out, clean_feats, lmbda, (len(images),) + images[0].shape)
-        det_losses = det_model.forward_from_features(images, recon_feats, targets)
+        det_losses = det_model.compute_losses_from_features(images, recon_feats, targets)
         det_loss = sum(det_losses.values()) if isinstance(det_losses, dict) else torch.zeros((), device=device)
 
         total_loss = rd_loss + det_w * det_loss
@@ -182,7 +205,7 @@ def main():
     det_model = DetectionModel(num_classes=num_classes, pretrained=False).to(device)
     det_model.load_state_dict(det_ckpt['model_state_dict'])
     det_model.eval()
-    disable_parameter_grads(det_model)
+    det_model.freeze_parameters()
     logging.info('Loaded detection model and disabled parameter grads')
 
     # Compression model
@@ -218,11 +241,12 @@ def main():
 
     lmbda = config['training']['lambda']
     det_w = float(config['training'].get('detection_loss_weight', 1.0))
+    grad_clip = float(config['training'].get('grad_clip_max_norm', 1.0))
     best_val = float('inf')
 
     for epoch in range(config['training']['epochs']):
         tr_total, tr_rd, tr_det, tr_ratio = train_one_epoch(
-            comp_model, det_model, optimizer, lmbda, det_w, device, train_loader, config['training']['log_interval']
+            comp_model, det_model, optimizer, lmbda, det_w, device, train_loader, config['training']['log_interval'], grad_clip
         )
 
         va_total, va_rd, va_det, va_ratio = validate(
@@ -234,12 +258,9 @@ def main():
             f"rd(tr/va)=({tr_rd:.4f}/{va_rd:.4f}) det(tr/va)=({tr_det:.4f}/{va_det:.4f}) "
             f"ratio(det/rd)(tr/va)=({tr_ratio:.3f}/{va_ratio:.3f}) det_w={det_w:.3f}"
         )
-        log_epoch_summary(epoch, (tr_total, tr_rd, tr_det), (va_total, va_rd, va_det), optimizer, config)
 
         if scheduler:
             scheduler.step(va_total)
-
-        save_training_diagnostics(save_dir, epoch, (tr_total, tr_rd, tr_det), (va_total, va_rd, va_det), optimizer, comp_model, config)
 
         if va_total < best_val:
             best_val = va_total

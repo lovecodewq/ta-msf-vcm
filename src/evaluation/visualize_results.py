@@ -11,6 +11,7 @@ import torch
 from PIL import Image
 
 from data.kitti_dataset import KITTIDetectionDataset
+from utils.training_utils import get_lambda_from_checkpoint
 
 
 def draw_boxes(ax, img_np, preds, gt=None, threshold: float = 0.5, color_map: Dict[int, str] = None, title: str = ''):
@@ -50,6 +51,8 @@ def main():
     parser.add_argument('--meta_img', type=str, required=False, help='metadata.json from image compression run')
     parser.add_argument('--meta_feat', type=str, required=False, help='metadata.json from feature compression run')
     parser.add_argument('--manifest', type=str, required=False, help='Optional manifest JSON with paths to all inputs')
+    parser.add_argument('--image_model_type', type=str, required=False, help='Optional label for image compression model type (e.g., factorized_prior)')
+    parser.add_argument('--feature_model_type', type=str, required=False, help='Optional label for feature compression model type (e.g., fused_feature, fused_feature_with_detection_loss)')
     parser.add_argument('--out_dir', type=str, required=True)
     parser.add_argument('--num_samples', type=int, default=20)
     args = parser.parse_args()
@@ -91,6 +94,18 @@ def main():
         meta_img = json.load(f)
     with open(meta_feat_path) as f:
         meta_feat = json.load(f)
+    # Extract checkpoints
+    img_ckpt = meta_img.get('checkpoint')
+    feat_ckpt = meta_feat.get('checkpoint')
+    # Derive model types if not provided
+    image_model_type = args.image_model_type or ('factorized_prior' if img_ckpt and 'factorized_prior' in img_ckpt else 'image_model')
+    if args.feature_model_type:
+        feature_model_type = args.feature_model_type
+    else:
+        if feat_ckpt and 'with_detect_loss' in feat_ckpt:
+            feature_model_type = 'fused_feature_with_detection_loss'
+        else:
+            feature_model_type = 'fused_feature'
 
     # Build lookup
     def to_map(d):
@@ -113,6 +128,10 @@ def main():
     map_raw = float(raw.get('metrics', {}).get('map50', float('nan')))
     map_img = float(img.get('metrics', {}).get('map50', float('nan')))
     map_feat = float(feat.get('metrics', {}).get('map50', float('nan')))
+
+    # Average BPP across all images (computed here for reuse in plot and summary export)
+    avg_bpp_img = float(np.mean(list(bpp_img.values()))) if bpp_img else float('nan')
+    avg_bpp_feat = float(np.mean(list(bpp_feat.values()))) if bpp_feat else float('nan')
 
     # Visualize a subset
     # Prefer raw image for 'Raw' panel to avoid scale mismatch
@@ -149,11 +168,11 @@ def main():
     # Plot BPP vs mAP50 scatter for image vs feature compression
     try:
         fig2, ax = plt.subplots(figsize=(8, 6))
-        # Average BPP across all images
-        avg_bpp_img = float(np.mean(list(bpp_img.values()))) if bpp_img else float('nan')
-        avg_bpp_feat = float(np.mean(list(bpp_feat.values()))) if bpp_feat else float('nan')
         ax.scatter([avg_bpp_img], [map_img], label='Image compression', marker='o', s=120)
         ax.scatter([avg_bpp_feat], [map_feat], label='Feature compression', marker='s', s=120)
+        # Baseline: raw image mAP@0.5 as a horizontal reference line
+        if not np.isnan(map_raw):
+            ax.axhline(y=map_raw, color='gray', linestyle='--', linewidth=1.5, label=f'Raw baseline (mAP@0.5={map_raw:.3f})')
         ax.set_xlabel('Bits Per Pixel (avg)')
         ax.set_ylabel('mAP@0.5')
         ax.set_title('BPP vs mAP@0.5')
@@ -164,6 +183,35 @@ def main():
         logging.info(f'Saved BPP vs mAP@0.5 plot to {out_dir / "bpp_vs_map50.png"}')
     except Exception as e:
         logging.warning(f'Failed to plot BPP vs mAP@0.5: {e}')
+
+    # Export the plotted points for downstream analysis
+    try:
+        lambda_img = get_lambda_from_checkpoint(img_ckpt) if img_ckpt else None
+        lambda_feat = get_lambda_from_checkpoint(feat_ckpt) if feat_ckpt else None
+        summary_points = {
+            'image_compression': {
+                'avg_bpp': avg_bpp_img,
+                'map50': map_img,
+                'checkpoint': img_ckpt,
+                'model_type': image_model_type,
+                'lambda': lambda_img,
+            },
+            'feature_compression': {
+                'avg_bpp': avg_bpp_feat,
+                'map50': map_feat,
+                'checkpoint': feat_ckpt,
+                'model_type': feature_model_type,
+                'lambda': lambda_feat,
+            },
+            'raw': {
+                'map50': map_raw
+            }
+        }
+        with open(out_dir / 'bpp_vs_map50.json', 'w') as jf:
+            json.dump(summary_points, jf, indent=2)
+        logging.info(f"Saved BPP vs mAP@0.5 data points to {out_dir / 'bpp_vs_map50.json'}")
+    except Exception as e:
+        logging.warning(f'Failed to save BPP vs mAP@0.5 points: {e}')
 
 
 if __name__ == '__main__':

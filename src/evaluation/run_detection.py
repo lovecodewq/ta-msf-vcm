@@ -210,7 +210,14 @@ def main():
                 if args.debug_shapes and batch_idx < 5:
                     sizes = [tuple(img.shape[-2:]) for img in images]
                     feat_sizes = {k: tuple(v.shape[-2:]) for k, v in feats_batched.items()}
-                    logging.info(f"[DEBUG] det batch {batch_idx} image_sizes={sizes} feature_sizes={feat_sizes}")
+                    # Compute expected feature sizes from current transform for comparison
+                    with torch.no_grad():
+                        ref_feats = model.get_fpn_features(images)
+                    ref_sizes = {k: tuple(v.shape[-2:]) for k, v in ref_feats.items()}
+                    logging.info(f"[DEBUG] det batch {batch_idx} image_sizes={sizes} feature_sizes={feat_sizes} expected_sizes={ref_sizes}")
+                    # Quick check for mismatch
+                    if feat_sizes.get('p2') != ref_sizes.get('p2'):
+                        logging.warning(f"[ALIGN] p2 size mismatch: loaded={feat_sizes.get('p2')} expected={ref_sizes.get('p2')} -> potential bbox offset")
                 predictions = model.forward_from_features(images, feats_batched)
             else:
                 predictions = model(images)

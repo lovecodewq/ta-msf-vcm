@@ -69,7 +69,7 @@ training:
   batch_size: 8
   epochs: 100
   learning_rate: 1.0e-4
-  lambda: 5.0  # Rate-distortion trade-off parameter
+  lambda: 0.5  # Rate-distortion trade-off parameter
   num_workers: 4
   log_interval: 10  # Log every N batches
   save_dir: "checkpoints/fpn_joint_auto_compression_fused_feature"

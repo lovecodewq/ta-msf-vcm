@@ -79,6 +79,34 @@ class DetectionModel(nn.Module):
             return losses
             
         return detections
+
+    def compute_losses_from_features(self,
+                                     images: List[torch.Tensor],
+                                     features: Dict[str, torch.Tensor],
+                                     targets: List[Dict[str, torch.Tensor]]) -> Dict[str, torch.Tensor]:
+        """Compute detection losses using pre-computed FPN features while keeping parameters frozen.
+
+        This temporarily sets the internal model to training mode to make torchvision's
+        detection heads return losses, then restores the previous mode. Gradients are
+        enabled so that loss can backpropagate into `features` (e.g., to optimize a
+        compressor), but you should freeze this model's parameters beforehand by calling
+        `freeze_parameters()` so they are not updated.
+        """
+        prev_mode = self.model.training
+        self.model.train(True)
+        try:
+            losses = self.forward_from_features(images, features, targets)
+            if not isinstance(losses, dict):
+                # Safety: ensure we always return a dict of losses
+                return {}
+            return losses
+        finally:
+            self.model.train(prev_mode)
+
+    def freeze_parameters(self) -> None:
+        """Disable gradients for all detection parameters."""
+        for p in self.model.parameters():
+            p.requires_grad_(False)
     
     def get_fpn_features(self, images: torch.Tensor) -> Dict[str, torch.Tensor]:
         """Extract FPN features from images - ideal for compression and distributed inference."""
