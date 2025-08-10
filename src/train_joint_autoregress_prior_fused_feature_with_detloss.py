@@ -18,6 +18,8 @@ import torch
 import torch.optim as optim
 from torch.utils.data import DataLoader
 from tqdm import tqdm
+import torch
+import os
 
 from data.kitti_dataset import KITTIDetectionDataset
 from data.transforms import create_transforms, create_detection_transforms
@@ -30,6 +32,9 @@ from utils.training_utils import (
     log_epoch_summary,
     save_training_diagnostics,
     save_best_model,
+    save_fpn_features_to_cache,
+    load_fpn_features_from_cache,
+    precompute_feature_cache,
 )
 from utils.metrics import compute_rate_distortion_loss
 
@@ -92,7 +97,11 @@ def disable_parameter_grads(module: torch.nn.Module) -> None:
         p.requires_grad_(False)
 
 
-def train_one_epoch(model, det_model, optimizer, lmbda, det_w, device, loader, log_interval, grad_clip_max_norm: float = 1.0):
+def _load_cached_features(cache_dir: Path, image_ids, device):
+    return load_fpn_features_from_cache(cache_dir, image_ids, device)
+
+
+def train_one_epoch(model, det_model, optimizer, lmbda, det_w, device, loader, log_interval, grad_clip_max_norm: float = 1.0, feature_cache_dir: Path = None):
     model.train()
     det_model.eval()
 
@@ -107,9 +116,13 @@ def train_one_epoch(model, det_model, optimizer, lmbda, det_w, device, loader, l
 
         optimizer.zero_grad()
 
-        # Extract clean FPN features
-        with torch.no_grad():
-            clean_feats = det_model.get_fpn_features(images)
+        # Extract or load clean FPN features
+        if feature_cache_dir is not None:
+            image_ids = [t.get('image_id') for t in targets]
+            clean_feats = _load_cached_features(feature_cache_dir, image_ids, device)
+        else:
+            with torch.no_grad():
+                clean_feats = det_model.get_fpn_features(images)
 
         # Compress and reconstruct features
         out = model(clean_feats)
@@ -155,7 +168,7 @@ def train_one_epoch(model, det_model, optimizer, lmbda, det_w, device, loader, l
 
 
 @torch.no_grad()
-def validate(model, det_model, lmbda, det_w, device, loader):
+def validate(model, det_model, lmbda, det_w, device, loader, feature_cache_dir: Path = None):
     model.eval()
     det_model.eval()
 
@@ -168,7 +181,11 @@ def validate(model, det_model, lmbda, det_w, device, loader):
         images = [img.to(device) for img in images]
         targets = [{k: v.to(device) if isinstance(v, torch.Tensor) else v for k, v in t.items()} for t in targets]
 
-        clean_feats = det_model.get_fpn_features(images)
+        if feature_cache_dir is not None:
+            image_ids = [t.get('image_id') for t in targets]
+            clean_feats = _load_cached_features(feature_cache_dir, image_ids, device)
+        else:
+            clean_feats = det_model.get_fpn_features(images)
         out = model(clean_feats)
         recon_feats = out['features']
 
@@ -244,13 +261,24 @@ def main():
     grad_clip = float(config['training'].get('grad_clip_max_norm', 1.0))
     best_val = float('inf')
 
+    # Optional feature cache
+    cache_cfg = config.get('feature_cache', {})
+    use_cache = bool(cache_cfg.get('enabled', False))
+    cache_dir = Path(cache_cfg.get('dir', save_dir / 'fpn_cache'))
+    if use_cache:
+        logging.info(f"Feature cache enabled. Directory: {cache_dir}")
+        precompute_feature_cache(det_model, train_loader, device, cache_dir, overwrite=bool(cache_cfg.get('overwrite', False)))
+        precompute_feature_cache(det_model, val_loader, device, cache_dir, overwrite=False)
+
     for epoch in range(config['training']['epochs']):
         tr_total, tr_rd, tr_det, tr_ratio = train_one_epoch(
-            comp_model, det_model, optimizer, lmbda, det_w, device, train_loader, config['training']['log_interval'], grad_clip
+            comp_model, det_model, optimizer, lmbda, det_w, device, train_loader, config['training']['log_interval'], grad_clip,
+            feature_cache_dir=(cache_dir if use_cache else None)
         )
 
         va_total, va_rd, va_det, va_ratio = validate(
-            comp_model, det_model, lmbda, det_w, device, val_loader
+            comp_model, det_model, lmbda, det_w, device, val_loader,
+            feature_cache_dir=(cache_dir if use_cache else None)
         )
 
         logging.info(

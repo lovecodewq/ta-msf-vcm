@@ -26,8 +26,16 @@ def create_run_directory(base_save_dir, config):
     lr = config['training']['learning_rate']
     batch_size = config['training']['batch_size']
     
-    # Create descriptive directory name
-    run_name = f"run_{timestamp}_lambda_{lambda_val:.2e}_lr_{lr:.2e}_bs_{batch_size}"
+    # Optionally include detection loss weight for hybrid objectives
+    det_w = None
+    try:
+        det_w = config['training'].get('detection_loss_weight', None)
+    except Exception:
+        det_w = None
+    if det_w is not None:
+        run_name = f"run_{timestamp}_lambda_{lambda_val:.2e}_w_{float(det_w):.2e}_lr_{lr:.2e}_bs_{batch_size}"
+    else:
+        run_name = f"run_{timestamp}_lambda_{lambda_val:.2e}_lr_{lr:.2e}_bs_{batch_size}"
     
     # Create full path
     run_dir = Path(base_save_dir) / run_name

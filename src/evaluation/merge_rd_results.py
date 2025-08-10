@@ -40,7 +40,8 @@ def linear_fit(points: List[Tuple[float, float]]) -> Tuple[float, float]:
 
 
 def merge_points(files: List[Path]) -> Dict[str, Any]:
-    raw_map_values: List[float] = []
+    # Single raw baseline (take the first found; they should be identical across runs)
+    raw_map_value: float = None  # type: ignore
     image_by_model: Dict[str, Dict[str, Any]] = {}
     feature_by_model: Dict[str, Dict[str, Any]] = {}
 
@@ -48,9 +49,9 @@ def merge_points(files: List[Path]) -> Dict[str, Any]:
         d = load_point(fp)
         # raw
         raw = d.get('raw', {})
-        if isinstance(raw, dict) and 'map50' in raw:
+        if raw_map_value is None and isinstance(raw, dict) and 'map50' in raw:
             try:
-                raw_map_values.append(float(raw['map50']))
+                raw_map_value = float(raw['map50'])
             except Exception:
                 pass
 
@@ -58,29 +59,44 @@ def merge_points(files: List[Path]) -> Dict[str, Any]:
         img = d.get('image_compression', {})
         if 'avg_bpp' in img and 'map50' in img:
             mt = img.get('model_type', 'image_model')
-            image_by_model.setdefault(mt, {'points': []})
-            image_by_model[mt]['points'].append({
-                'avg_bpp': float(img['avg_bpp']),
-                'map50': float(img['map50']),
-                'lambda': img.get('lambda'),
-                'checkpoint': img.get('checkpoint'),
-                'run_dir': d.get('__run_dir'),
-                'source': d.get('__source_file'),
-            })
+            image_by_model.setdefault(mt, {'points': [], 'by_ckpt': {}})
+            ckpt = img.get('checkpoint') or f"{d.get('__run_dir')}/image"
+            if ckpt not in image_by_model[mt]['by_ckpt']:
+                pt = {
+                    'avg_bpp': float(img['avg_bpp']),
+                    'map50': float(img['map50']),
+                    'lambda': img.get('lambda'),
+                    'checkpoint': ckpt,
+                    'run_dir': d.get('__run_dir'),
+                    'source': d.get('__source_file'),
+                }
+                image_by_model[mt]['by_ckpt'][ckpt] = pt
+                image_by_model[mt]['points'].append(pt)
 
         # feature
         feat = d.get('feature_compression', {})
         if 'avg_bpp' in feat and 'map50' in feat:
             mt = feat.get('model_type', 'feature_model')
             feature_by_model.setdefault(mt, {'points': []})
-            feature_by_model[mt]['points'].append({
-                'avg_bpp': float(feat['avg_bpp']),
-                'map50': float(feat['map50']),
-                'lambda': feat.get('lambda'),
-                'checkpoint': feat.get('checkpoint'),
-                'run_dir': d.get('__run_dir'),
-                'source': d.get('__source_file'),
-            })
+            if feat.get('detection_loss_weight') is not None:
+                feature_by_model[mt]['points'].append({
+                    'avg_bpp': float(feat['avg_bpp']),
+                    'map50': float(feat['map50']),
+                    'lambda': feat.get('lambda'),
+                    'detection_loss_weight': feat.get('detection_loss_weight'),
+                    'checkpoint': feat.get('checkpoint'),
+                    'run_dir': d.get('__run_dir'),
+                    'source': d.get('__source_file'),
+                })
+            else:
+                feature_by_model[mt]['points'].append({
+                    'avg_bpp': float(feat['avg_bpp']),
+                    'map50': float(feat['map50']),
+                    'lambda': feat.get('lambda'),
+                    'checkpoint': feat.get('checkpoint'),
+                    'run_dir': d.get('__run_dir'),
+                    'source': d.get('__source_file'),
+                })
 
     # Fit lines per model type
     for mt, bundle in image_by_model.items():
@@ -89,15 +105,33 @@ def merge_points(files: List[Path]) -> Dict[str, Any]:
         image_by_model[mt]['fit'] = {'a': a, 'b': b}
 
     for mt, bundle in feature_by_model.items():
-        pts = [(p['avg_bpp'], p['map50']) for p in bundle['points']]
+        pts_source = bundle['points']
+        # Only build best_points if detection_loss_weight is present for this model type
+        has_weight = any(p.get('detection_loss_weight') is not None for p in pts_source)
+        if has_weight:
+            # For each lambda, keep the point with the highest mAP (tie-breaker: lowest bpp)
+            by_lambda: Dict[Any, List[Dict[str, Any]]] = {}
+            for p in pts_source:
+                lam = p.get('lambda')
+                by_lambda.setdefault(lam, []).append(p)
+            # Expose grouping structure
+            feature_by_model[mt]['by_lambda'] = by_lambda
+            # Best per lambda
+            best_points: List[Dict[str, Any]] = []
+            for lam, plist in by_lambda.items():
+                best = sorted(plist, key=lambda q: (-q['map50'], q['avg_bpp']))[0]
+                best_points.append(best)
+            feature_by_model[mt]['best_points'] = best_points
+            pts = [(p['avg_bpp'], p['map50']) for p in best_points]
+        else:
+            # No detection weight hyperparameter: use all points directly
+            pts = [(p['avg_bpp'], p['map50']) for p in pts_source]
         a, b = linear_fit(pts)
         feature_by_model[mt]['fit'] = {'a': a, 'b': b}
 
     merged = {
         'raw': {
-            'map50_values': raw_map_values,
-            'map50_mean': float(np.mean(raw_map_values)) if raw_map_values else None,
-            'n': len(raw_map_values),
+            'map50': raw_map_value,
         },
         'image': {
             'by_model': image_by_model,
@@ -118,35 +152,45 @@ def plot_merged(merged: Dict[str, Any], out_path: Path) -> None:
     if map_raw is not None:
         ax.axhline(y=map_raw, color='gray', linestyle='--', linewidth=1.5, label=f'Raw baseline (mAP@0.5={map_raw:.3f})')
 
+    # Consistent colors per (category, model_type)
+    color_cycle = plt.rcParams['axes.prop_cycle'].by_key().get('color', ['C0','C1','C2','C3','C4','C5','C6','C7','C8','C9'])
+    color_map: Dict[Tuple[str, str], str] = {}
+    def get_color(category: str, model_type: str) -> str:
+        key = (category, model_type)
+        if key not in color_map:
+            color_map[key] = color_cycle[len(color_map) % len(color_cycle)]
+        return color_map[key]
+
     # Plot image models
     for mt, bundle in merged.get('image', {}).get('by_model', {}).items():
         pts = bundle.get('points', [])
         if not pts:
             continue
-        x = [p['avg_bpp'] for p in pts]
-        y = [p['map50'] for p in pts]
-        ax.scatter(x, y, label=f'Image: {mt}', marker='o')
-        a = bundle.get('fit', {}).get('a')
-        b = bundle.get('fit', {}).get('b')
-        if a == a and b == b:  # not NaN
-            xs = np.linspace(min(x), max(x), 50)
-            ys = a * xs + b
-            ax.plot(xs, ys, linestyle='-', alpha=0.6)
+        # sort by bpp for polyline
+        pts_sorted = sorted(pts, key=lambda p: p['avg_bpp'])
+        x = [p['avg_bpp'] for p in pts_sorted]
+        y = [p['map50'] for p in pts_sorted]
+        color = get_color('image', mt)
+        ax.scatter(x, y, label=f'Image: {mt}', marker='o', color=color)
+        if len(pts_sorted) >= 2:
+            ax.plot(x, y, linestyle='--', alpha=0.8, color=color)
 
     # Plot feature models
     for mt, bundle in merged.get('feature', {}).get('by_model', {}).items():
-        pts = bundle.get('points', [])
+        # Only apply best-points filtering for models trained with detection loss
+        if mt == 'fused_feature_with_detection_loss' and bundle.get('best_points'):
+            pts = bundle['best_points']
+        else:
+            pts = bundle.get('points', [])
         if not pts:
             continue
-        x = [p['avg_bpp'] for p in pts]
-        y = [p['map50'] for p in pts]
-        ax.scatter(x, y, label=f'Feature: {mt}', marker='s')
-        a = bundle.get('fit', {}).get('a')
-        b = bundle.get('fit', {}).get('b')
-        if a == a and b == b:
-            xs = np.linspace(min(x), max(x), 50)
-            ys = a * xs + b
-            ax.plot(xs, ys, linestyle='-', alpha=0.6)
+        pts_sorted = sorted(pts, key=lambda p: p['avg_bpp'])
+        x = [p['avg_bpp'] for p in pts_sorted]
+        y = [p['map50'] for p in pts_sorted]
+        color = get_color('feature', mt)
+        ax.scatter(x, y, label=f'Feature: {mt}', marker='s', color=color)
+        if len(pts_sorted) >= 2:
+            ax.plot(x, y, linestyle='--', alpha=0.8, color=color)
 
     ax.set_xlabel('Bits Per Pixel (avg)')
     ax.set_ylabel('mAP@0.5')

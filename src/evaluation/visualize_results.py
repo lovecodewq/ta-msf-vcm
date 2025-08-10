@@ -11,7 +11,7 @@ import torch
 from PIL import Image
 
 from data.kitti_dataset import KITTIDetectionDataset
-from utils.training_utils import get_lambda_from_checkpoint
+from utils.training_utils import get_lambda_from_checkpoint, get_weight_from_checkpoint
 
 
 def draw_boxes(ax, img_np, preds, gt=None, threshold: float = 0.5, color_map: Dict[int, str] = None, title: str = ''):
@@ -188,6 +188,7 @@ def main():
     try:
         lambda_img = get_lambda_from_checkpoint(img_ckpt) if img_ckpt else None
         lambda_feat = get_lambda_from_checkpoint(feat_ckpt) if feat_ckpt else None
+        weight_feat = get_weight_from_checkpoint(feat_ckpt) if feat_ckpt else None
         summary_points = {
             'image_compression': {
                 'avg_bpp': avg_bpp_img,
@@ -202,6 +203,7 @@ def main():
                 'checkpoint': feat_ckpt,
                 'model_type': feature_model_type,
                 'lambda': lambda_feat,
+                'detection_loss_weight': weight_feat,
             },
             'raw': {
                 'map50': map_raw
