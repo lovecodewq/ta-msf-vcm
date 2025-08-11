@@ -45,6 +45,8 @@ def parse_args():
     parser.add_argument('--config', type=str, default='configs/train_joint_autoregress_prior_fused_feature_detect_loss.yaml')
     parser.add_argument('--detection_checkpoint', type=str, required=True,
                         help='Path to detection model checkpoint (used for loss only)')
+    parser.add_argument('--init_checkpoint', type=str, default=None,
+                        help='Optional path to a pre-trained feature compressor checkpoint to initialize from (no detection loss)')
     return parser.parse_args()
 
 
@@ -109,6 +111,7 @@ def train_one_epoch(model, det_model, optimizer, lmbda, det_w, device, loader, l
     rd_meter = AverageMeter()
     det_meter = AverageMeter()
     ratio_meter = AverageMeter()
+    mse_meter = AverageMeter()
 
     for batch_idx, (images, targets) in enumerate(tqdm(loader, desc='Training', leave=False)):
         images = [img.to(device) for img in images]
@@ -149,6 +152,7 @@ def train_one_epoch(model, det_model, optimizer, lmbda, det_w, device, loader, l
         loss_meter.update(float(total_loss))
         rd_meter.update(float(rd_loss))
         det_meter.update(float(det_loss))
+        mse_meter.update(float(rd_mse))
         ratio = float(det_w) * float(det_loss) / (float(rd_loss) + 1e-8)
         ratio_meter.update(ratio)
 
@@ -159,12 +163,12 @@ def train_one_epoch(model, det_model, optimizer, lmbda, det_w, device, loader, l
             det_share = det_contrib / (total_now + 1e-8)
             logging.info(
                 f"Train [{batch_idx}/{len(loader)}] total(avg)={loss_meter.avg:.4f} "
-                f"rd(avg)={rd_meter.avg:.4f} det(avg)={det_meter.avg:.4f} ratio(det/rd)(avg)={ratio_meter.avg:.3f} "
-                f"curr_rd={float(rd_loss):.4f} curr_det={float(det_loss):.4f} det_w={det_w:.3f} "
+                f"rd(avg)={rd_meter.avg:.4f} mse(avg)={mse_meter.avg:.6f} det(avg)={det_meter.avg:.4f} ratio(det/rd)(avg)={ratio_meter.avg:.3f} "
+                f"curr_rd={float(rd_loss):.4f} curr_mse={float(rd_mse):.6f} curr_det={float(det_loss):.4f} det_w={det_w:.3f} "
                 f"contrib(rd,det)=({rd_share:.2f},{det_share:.2f}) bpp={rd_bpp:.4f}"
             )
 
-    return loss_meter.avg, rd_meter.avg, det_meter.avg, ratio_meter.avg
+    return loss_meter.avg, rd_meter.avg, det_meter.avg, ratio_meter.avg, mse_meter.avg
 
 
 @torch.no_grad()
@@ -176,6 +180,7 @@ def validate(model, det_model, lmbda, det_w, device, loader, feature_cache_dir: 
     rd_meter = AverageMeter()
     det_meter = AverageMeter()
     ratio_meter = AverageMeter()
+    mse_meter = AverageMeter()
 
     for images, targets in tqdm(loader, desc='Validating', leave=False):
         images = [img.to(device) for img in images]
@@ -198,9 +203,10 @@ def validate(model, det_model, lmbda, det_w, device, loader, feature_cache_dir: 
         loss_meter.update(float(total_loss))
         rd_meter.update(float(rd_loss))
         det_meter.update(float(det_loss))
+        mse_meter.update(float(rd_mse))
         ratio_meter.update(float(det_loss) / (float(rd_loss) + 1e-8))
 
-    return loss_meter.avg, rd_meter.avg, det_meter.avg, ratio_meter.avg
+    return loss_meter.avg, rd_meter.avg, det_meter.avg, ratio_meter.avg, mse_meter.avg
 
 
 def main():
@@ -233,6 +239,16 @@ def main():
         output_channels=config['model']['fpn_channels_per_level'],
     ).to(device)
     logging.info(f'Compression model params: {sum(p.numel() for p in comp_model.parameters())}')
+
+    # Optional initialization from a pre-trained (no detection loss) checkpoint
+    if args.init_checkpoint and Path(args.init_checkpoint).exists():
+        try:
+            init_ckpt = torch.load(args.init_checkpoint, map_location=device)
+            state = init_ckpt.get('model_state_dict', init_ckpt)
+            comp_model.load_state_dict(state, strict=True)
+            logging.info(f"Initialized compressor from {args.init_checkpoint}")
+        except Exception as e:
+            logging.warning(f"Failed to load init checkpoint {args.init_checkpoint}: {e}")
 
     optimizer = optim.Adam(
         comp_model.parameters(),
@@ -271,19 +287,19 @@ def main():
         precompute_feature_cache(det_model, val_loader, device, cache_dir, overwrite=False)
 
     for epoch in range(config['training']['epochs']):
-        tr_total, tr_rd, tr_det, tr_ratio = train_one_epoch(
+        tr_total, tr_rd, tr_det, tr_ratio, tr_mse = train_one_epoch(
             comp_model, det_model, optimizer, lmbda, det_w, device, train_loader, config['training']['log_interval'], grad_clip,
             feature_cache_dir=(cache_dir if use_cache else None)
         )
 
-        va_total, va_rd, va_det, va_ratio = validate(
+        va_total, va_rd, va_det, va_ratio, va_mse = validate(
             comp_model, det_model, lmbda, det_w, device, val_loader,
             feature_cache_dir=(cache_dir if use_cache else None)
         )
 
         logging.info(
             f"Epoch {epoch}: total(tr/va)=({tr_total:.4f}/{va_total:.4f}) "
-            f"rd(tr/va)=({tr_rd:.4f}/{va_rd:.4f}) det(tr/va)=({tr_det:.4f}/{va_det:.4f}) "
+            f"rd(tr/va)=({tr_rd:.4f}/{va_rd:.4f}) mse(tr/va)=({tr_mse:.6f}/{va_mse:.6f}) det(tr/va)=({tr_det:.4f}/{va_det:.4f}) "
             f"ratio(det/rd)(tr/va)=({tr_ratio:.3f}/{va_ratio:.3f}) det_w={det_w:.3f}"
         )
 
