@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import List, Dict, Any, Tuple
 
 import numpy as np
+import math
 import matplotlib.pyplot as plt
 
 
@@ -51,20 +52,29 @@ def merge_points(files: List[Path]) -> Dict[str, Any]:
         raw = d.get('raw', {})
         if raw_map_value is None and isinstance(raw, dict) and 'map50' in raw:
             try:
-                raw_map_value = float(raw['map50'])
+                val = float(raw['map50'])
+                if math.isfinite(val):
+                    raw_map_value = val
             except Exception:
                 pass
-
         # image
         img = d.get('image_compression', {})
         if 'avg_bpp' in img and 'map50' in img:
+            # Skip non-finite points
+            try:
+                xbpp = float(img['avg_bpp'])
+                ymap = float(img['map50'])
+                if not (math.isfinite(xbpp) and math.isfinite(ymap)):
+                    pass
+            except Exception:
+                pass
             mt = img.get('model_type', 'image_model')
             image_by_model.setdefault(mt, {'points': [], 'by_ckpt': {}})
             ckpt = img.get('checkpoint') or f"{d.get('__run_dir')}/image"
             if ckpt not in image_by_model[mt]['by_ckpt']:
                 pt = {
-                    'avg_bpp': float(img['avg_bpp']),
-                    'map50': float(img['map50']),
+                    'avg_bpp': xbpp,
+                    'map50': ymap,
                     'lambda': img.get('lambda'),
                     'checkpoint': ckpt,
                     'run_dir': d.get('__run_dir'),
@@ -72,16 +82,22 @@ def merge_points(files: List[Path]) -> Dict[str, Any]:
                 }
                 image_by_model[mt]['by_ckpt'][ckpt] = pt
                 image_by_model[mt]['points'].append(pt)
-
         # feature
         feat = d.get('feature_compression', {})
         if 'avg_bpp' in feat and 'map50' in feat:
+            try:
+                xbpp = float(feat['avg_bpp'])
+                ymap = float(feat['map50'])
+                if not (math.isfinite(xbpp) and math.isfinite(ymap)):
+                    continue
+            except Exception:
+                continue
             mt = feat.get('model_type', 'feature_model')
             feature_by_model.setdefault(mt, {'points': []})
             if feat.get('detection_loss_weight') is not None:
                 feature_by_model[mt]['points'].append({
-                    'avg_bpp': float(feat['avg_bpp']),
-                    'map50': float(feat['map50']),
+                    'avg_bpp': xbpp,
+                    'map50': ymap,
                     'lambda': feat.get('lambda'),
                     'detection_loss_weight': feat.get('detection_loss_weight'),
                     'checkpoint': feat.get('checkpoint'),
@@ -90,8 +106,8 @@ def merge_points(files: List[Path]) -> Dict[str, Any]:
                 })
             else:
                 feature_by_model[mt]['points'].append({
-                    'avg_bpp': float(feat['avg_bpp']),
-                    'map50': float(feat['map50']),
+                    'avg_bpp': xbpp,
+                    'map50': ymap,
                     'lambda': feat.get('lambda'),
                     'checkpoint': feat.get('checkpoint'),
                     'run_dir': d.get('__run_dir'),
@@ -148,7 +164,7 @@ def plot_merged(merged: Dict[str, Any], out_path: Path) -> None:
     ax = plt.gca()
 
     # Raw baseline
-    map_raw = merged.get('raw', {}).get('map50_mean')
+    map_raw = merged.get('raw', {}).get('map50')
     if map_raw is not None:
         ax.axhline(y=map_raw, color='gray', linestyle='--', linewidth=1.5, label=f'Raw baseline (mAP@0.5={map_raw:.3f})')
 
