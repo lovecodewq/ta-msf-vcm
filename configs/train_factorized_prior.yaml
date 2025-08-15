@@ -55,9 +55,9 @@ data:
 # Training configuration
 training:
   batch_size: 16
-  epochs: 1000  # Train for longer as per paper
-  learning_rate: 1e-4  # Adam learning rate
-  lambda: 0.1  # Rate-distortion trade-off parameter
+  epochs: 100  # Train for longer as per paper
+  learning_rate: 1e-5  # Adam learning rate
+  lambda: 0.003  # Rate-distortion trade-off parameter
                 # Train multiple models with different lambda values:
                 # - 0.001 (high quality, high bitrate)
                 # - 0.003
@@ -86,8 +86,8 @@ training:
   # Early stopping
   early_stopping:
     enabled: true
-    patience: 20  # Stop if no improvement for 20 epochs
-    min_delta: 1e-5  # Minimum change to qualify as an improvement
+    patience: 5  # Stop if no improvement for 20 epochs
+    min_delta: 1e-4  # Minimum change to qualify as an improvement
 
 # Validation settings
 validation:

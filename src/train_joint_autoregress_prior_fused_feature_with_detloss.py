@@ -134,11 +134,14 @@ def train_one_epoch(model, det_model, optimizer, lmbda, det_w, device, loader, l
         # Rate-distortion loss
         rd_loss, rd_mse, rd_bpp = compute_rate_distortion_loss(out, clean_feats, lmbda, (len(images),) + images[0].shape)
 
-        # Detection loss using reconstructed features
-        # Compute detection losses; must set model to training mode for losses to be produced
-        det_losses = det_model.compute_losses_from_features(images, recon_feats, targets)
-        if isinstance(det_losses, dict):
-            det_loss = sum(det_losses.values())
+        # Detection loss using reconstructed features (skip if weight is zero)
+        if det_w > 0:
+            # Compute detection losses; must set model to training mode for losses to be produced
+            det_losses = det_model.compute_losses_from_features(images, recon_feats, targets)
+            if isinstance(det_losses, dict):
+                det_loss = sum(det_losses.values())
+            else:
+                det_loss = torch.zeros((), device=device)
         else:
             det_loss = torch.zeros((), device=device)
 
@@ -195,8 +198,11 @@ def validate(model, det_model, lmbda, det_w, device, loader, feature_cache_dir: 
         recon_feats = out['features']
 
         rd_loss, rd_mse, rd_bpp = compute_rate_distortion_loss(out, clean_feats, lmbda, (len(images),) + images[0].shape)
-        det_losses = det_model.compute_losses_from_features(images, recon_feats, targets)
-        det_loss = sum(det_losses.values()) if isinstance(det_losses, dict) else torch.zeros((), device=device)
+        if det_w > 0:
+            det_losses = det_model.compute_losses_from_features(images, recon_feats, targets)
+            det_loss = sum(det_losses.values()) if isinstance(det_losses, dict) else torch.zeros((), device=device)
+        else:
+            det_loss = torch.zeros((), device=device)
 
         total_loss = rd_loss + det_w * det_loss
 
@@ -275,6 +281,7 @@ def main():
     lmbda = config['training']['lambda']
     det_w = float(config['training'].get('detection_loss_weight', 1.0))
     grad_clip = float(config['training'].get('grad_clip_max_norm', 1.0))
+    no_det_epochs = int(config['training'].get('no_det_loss_epochs', 10))
     best_val = float('inf')
 
     # Optional feature cache
@@ -287,20 +294,21 @@ def main():
         precompute_feature_cache(det_model, val_loader, device, cache_dir, overwrite=False)
 
     for epoch in range(config['training']['epochs']):
+        det_w_eff = det_w if epoch >= no_det_epochs else 0.0
         tr_total, tr_rd, tr_det, tr_ratio, tr_mse = train_one_epoch(
-            comp_model, det_model, optimizer, lmbda, det_w, device, train_loader, config['training']['log_interval'], grad_clip,
+            comp_model, det_model, optimizer, lmbda, det_w_eff, device, train_loader, config['training']['log_interval'], grad_clip,
             feature_cache_dir=(cache_dir if use_cache else None)
         )
 
         va_total, va_rd, va_det, va_ratio, va_mse = validate(
-            comp_model, det_model, lmbda, det_w, device, val_loader,
+            comp_model, det_model, lmbda, det_w_eff, device, val_loader,
             feature_cache_dir=(cache_dir if use_cache else None)
         )
 
         logging.info(
             f"Epoch {epoch}: total(tr/va)=({tr_total:.4f}/{va_total:.4f}) "
             f"rd(tr/va)=({tr_rd:.4f}/{va_rd:.4f}) mse(tr/va)=({tr_mse:.6f}/{va_mse:.6f}) det(tr/va)=({tr_det:.4f}/{va_det:.4f}) "
-            f"ratio(det/rd)(tr/va)=({tr_ratio:.3f}/{va_ratio:.3f}) det_w={det_w:.3f}"
+            f"ratio(det/rd)(tr/va)=({tr_ratio:.3f}/{va_ratio:.3f}) det_w_eff={det_w_eff:.3f}"
         )
 
         if scheduler:

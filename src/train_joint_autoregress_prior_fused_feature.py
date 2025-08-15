@@ -19,7 +19,7 @@ from pathlib import Path
 # Local imports
 from model.detection import DetectionModel
 from data.kitti_dataset import KITTIDetectionDataset
-from data.transforms import create_transforms
+from data.transforms import create_detection_transforms
 from utils import get_project_path
 from utils.training_utils import (
     setup_training_environment, AverageMeter, EarlyStopping,
@@ -179,9 +179,8 @@ def main():
     logging.info(f"Created JointAutoregressFPNCompressor model with {sum(p.numel() for p in model.parameters())} parameters")
     
     # Setup data loading
-    train_transform = create_transforms(config['data']['transforms'], split='train')
-    val_transform = create_transforms(config['data']['test_transforms'], split='val')
-    
+    train_transform = create_detection_transforms(config['data']['transforms'], apply_normalization=False)
+    val_transform = create_detection_transforms(config['data']['test_transforms'], apply_normalization=False)
     train_dataset = FPNDataset(
         txt_file=config['data']['train_list'],
         transform=train_transform

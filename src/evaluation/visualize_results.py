@@ -123,6 +123,8 @@ def main():
     parser.add_argument('--image_model_type', type=str, required=False, help='Optional label for image compression model type (e.g., factorized_prior)')
     parser.add_argument('--feature_model_type', type=str, required=False, help='Optional label for feature compression model type (e.g., fused_feature, fused_feature_with_detection_loss)')
     parser.add_argument('--out_dir', type=str, required=True)
+    # Optional L-MSFC anchor summary support
+    parser.add_argument('--lmsfc_summary', type=str, required=False, help='Path to L-MSFC summary/bpp_vs_map50.json')
     parser.add_argument('--num_samples', type=int, default=20)
     args = parser.parse_args()
 
@@ -156,8 +158,20 @@ def main():
     map_raw, raw_map, raw_tgt_map = load_raw_anchor(raw_json_path)
     map_img, img_map, img_tgt_map, bpp_img, img_ckpt = load_image_anchor(img_json_path, meta_img_path)
     map_feat, feat_map, feat_tgt_map, bpp_feat, feat_ckpt = load_feature_anchor(feat_json_path, meta_feat_path)
+    # Optionally load L-MSFC summary for plotting
+    map_lmsfc = float('nan')
+    avg_bpp_lmsfc = float('nan')
+    if args.lmsfc_summary:
+        try:
+            with open(args.lmsfc_summary) as lf:
+                lsum = json.load(lf)
+            l = lsum.get('lmsfc_feature_compression', {})
+            avg_bpp_lmsfc = float(l.get('avg_bpp')) if 'avg_bpp' in l else float('nan')
+            map_lmsfc = float(l.get('map50')) if 'map50' in l else float('nan')
+        except Exception as e:
+            logging.warning(f'Failed to load L-MSFC summary: {e}')
     # Derive model types if not provided
-    image_model_type = args.image_model_type or ('factorized_prior' if img_ckpt and 'factorized_prior' in img_ckpt else 'image_model')
+    image_model_type = args.image_model_type or ('factorized_prior' if img_ckpt and 'factorized_prior' in img_ckpt else '')
     if args.feature_model_type:
         feature_model_type = args.feature_model_type
     else:
@@ -231,6 +245,8 @@ def main():
             ax.scatter([avg_bpp_img], [map_img], label='Image compression', marker='o', s=120)
         if not np.isnan(avg_bpp_feat) and not np.isnan(map_feat):
             ax.scatter([avg_bpp_feat], [map_feat], label='Feature compression', marker='s', s=120)
+        if not np.isnan(avg_bpp_lmsfc) and not np.isnan(map_lmsfc):
+            ax.scatter([avg_bpp_lmsfc], [map_lmsfc], label='L-MSFC anchor', marker='^', s=120)
         # Baseline: raw image mAP@0.5 as a horizontal reference line
         if not np.isnan(map_raw):
             ax.axhline(y=map_raw, color='gray', linestyle='--', linewidth=1.5, label=f'Raw baseline (mAP@0.5={map_raw:.3f})')

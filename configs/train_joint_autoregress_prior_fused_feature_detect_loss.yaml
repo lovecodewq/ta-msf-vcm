@@ -48,10 +48,11 @@ training:
   batch_size: 8
   epochs: 100
   learning_rate: 1.0e-4
-  lambda: 5.0  # Rate-distortion trade-off parameter
-  detection_loss_weight: 0.01  # Weight for detection loss term in total loss
+  lambda: 30  # Rate-distortion trade-off parameter
+  detection_loss_weight: 0.05  # Weight for detection loss term in total loss
+  no_det_loss_epochs: 10  # Train with zero detection loss weight for the first N epochs
   grad_clip_max_norm: 1.0     # Gradient clipping; set 0 or negative to disable
-  num_workers: 4
+  num_workers: 10
   log_interval: 10  # Log every N batches
   save_dir: "checkpoints/fpn_joint_auto_compression_fused_feature_with_detect_loss"
 
@@ -71,7 +72,7 @@ training:
   # Early stopping
   early_stopping:
     enabled: true
-    patience: 10     # Number of epochs to wait before stopping
+    patience: 5     # Number of epochs to wait before stopping
     min_delta: 1.0e-4  # Minimum change in validation loss to qualify as an improvement
 
 validation:
@@ -97,3 +98,7 @@ compression:
   context_model:
     masked_conv_kernel_size: 5  # Kernel size for masked convolutions
     causal_context: true       # Use causal context only
+
+feature_cache:
+  enabled: false
+  overwrite: false

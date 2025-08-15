@@ -30,6 +30,63 @@ def load_point(fp: Path) -> Dict[str, Any]:
     return data
 
 
+def find_vtm_image_anchor_dirs(inputs: List[str]) -> List[Path]:
+    """Find directories that look like VTM image anchor outputs.
+
+    A valid directory contains both 'metadata.json' and 'preds.json'.
+    We search recursively under any input directories; if an input is itself a
+    directory that matches, include it.
+    """
+    dirs: List[Path] = []
+    seen: Dict[str, bool] = {}
+    for p in inputs:
+        path = Path(p)
+        candidates: List[Path] = []
+        if path.is_dir():
+            # Try itself
+            if (path / 'metadata.json').exists() and (path / 'preds.json').exists():
+                candidates.append(path)
+            # Recurse: look for any 'metadata.json' and check sibling 'preds.json'
+            for meta in path.rglob('metadata.json'):
+                if (meta.parent / 'preds.json').exists():
+                    candidates.append(meta.parent)
+        elif path.is_file():
+            # If a file is provided, check its parent
+            par = path.parent
+            if (par / 'metadata.json').exists() and (par / 'preds.json').exists():
+                candidates.append(par)
+        for c in candidates:
+            key = str(c.resolve())
+            if key not in seen:
+                seen[key] = True
+                dirs.append(c)
+    return sorted(dirs)
+
+
+def load_vtm_point(run_dir: Path) -> Dict[str, Any]:
+    """Load avg_bpp from metadata.json and map50 from preds.json."""
+    meta_fp = run_dir / 'metadata.json'
+    preds_fp = run_dir / 'preds.json'
+    with open(meta_fp, 'r') as f:
+        meta = json.load(f)
+    with open(preds_fp, 'r') as f:
+        preds = json.load(f)
+    # metadata.json structure: { 'summary': { 'avg_bpp': ... }, 'per_image': [...] }
+    avg_bpp = float(meta.get('summary', {}).get('avg_bpp'))
+    # preds.json structure: { 'metrics': { 'map50': ... }, ... }
+    map50 = float(preds.get('metrics', {}).get('map50'))
+    return {
+        '__source_file': str(meta_fp),
+        '__run_dir': str(run_dir),
+        'image_compression': {
+            'avg_bpp': avg_bpp,
+            'map50': map50,
+            'model_type': 'vtm_image_anchor',
+            'checkpoint': str(run_dir),
+        }
+    }
+
+
 def linear_fit(points: List[Tuple[float, float]]) -> Tuple[float, float]:
     if len(points) < 2:
         return (float('nan'), float('nan'))
@@ -39,28 +96,20 @@ def linear_fit(points: List[Tuple[float, float]]) -> Tuple[float, float]:
     a, b = np.linalg.lstsq(A, y, rcond=None)[0]
     return float(a), float(b)
 
-
-def merge_points(files: List[Path]) -> Dict[str, Any]:
-    # Single raw baseline (take the first found; they should be identical across runs)
-    raw_map_value: float = None  # type: ignore
-    image_by_model: Dict[str, Dict[str, Any]] = {}
-    feature_by_model: Dict[str, Dict[str, Any]] = {}
-
+def load_raw_point(files: List[Path]) -> float:
     for fp in files:
         d = load_point(fp)
-        # raw
-        raw = d.get('raw', {})
-        if raw_map_value is None and isinstance(raw, dict) and 'map50' in raw:
-            try:
-                val = float(raw['map50'])
-                if math.isfinite(val):
-                    raw_map_value = val
-            except Exception:
-                pass
-        # image
+        if 'raw' in d and isinstance(d['raw'], dict) and 'map50' in d['raw']:
+            return float(d['raw']['map50'])
+    return float('nan')
+
+def load_image_compression_point(files: List[Path]) -> Dict[str, Any]:
+    image_by_model: Dict[str, Dict[str, Any]] = {}
+    for fp in files:
+        d = load_point(fp)
         img = d.get('image_compression', {})
+        # note: avg_bpp and map50 might be NaN or null
         if 'avg_bpp' in img and 'map50' in img:
-            # Skip non-finite points
             try:
                 xbpp = float(img['avg_bpp'])
                 ymap = float(img['map50'])
@@ -68,7 +117,10 @@ def merge_points(files: List[Path]) -> Dict[str, Any]:
                     pass
             except Exception:
                 pass
-            mt = img.get('model_type', 'image_model')
+            mt = img.get('model_type', '')
+            if not mt:
+                continue
+            # only save one point per checkpoint per model type
             image_by_model.setdefault(mt, {'points': [], 'by_ckpt': {}})
             ckpt = img.get('checkpoint') or f"{d.get('__run_dir')}/image"
             if ckpt not in image_by_model[mt]['by_ckpt']:
@@ -82,8 +134,15 @@ def merge_points(files: List[Path]) -> Dict[str, Any]:
                 }
                 image_by_model[mt]['by_ckpt'][ckpt] = pt
                 image_by_model[mt]['points'].append(pt)
-        # feature
+    return image_by_model
+
+def load_feature_compression_point(files: List[Path]) -> Dict[str, Dict[str, Any]]:
+    feature_by_model: Dict[str, Dict[str, Any]] = {}
+    for fp in files:
+        d = load_point(fp)
         feat = d.get('feature_compression', {})
+        if not feat:
+            continue
         if 'avg_bpp' in feat and 'map50' in feat:
             try:
                 xbpp = float(feat['avg_bpp'])
@@ -92,7 +151,9 @@ def merge_points(files: List[Path]) -> Dict[str, Any]:
                     continue
             except Exception:
                 continue
-            mt = feat.get('model_type', 'feature_model')
+            mt = feat.get('model_type', '')
+            if not mt:
+                continue
             feature_by_model.setdefault(mt, {'points': []})
             if feat.get('detection_loss_weight') is not None:
                 feature_by_model[mt]['points'].append({
@@ -113,12 +174,80 @@ def merge_points(files: List[Path]) -> Dict[str, Any]:
                     'run_dir': d.get('__run_dir'),
                     'source': d.get('__source_file'),
                 })
+    return feature_by_model
+
+def load_lmsfc_feature_anchor_point(files: List[Path]) -> Dict[str, Dict[str, Any]]:
+    feature_by_model: Dict[str, Dict[str, Any]] = {}
+    for fp in files:
+        d = load_point(fp)
+        l = d.get('lmsfc_feature_compression', {})
+        if not l:
+            continue
+        try:
+            xbpp = float(l.get('avg_bpp'))
+            ymap = float(l.get('map50'))
+        except Exception:
+            continue
+        mt = l.get('model_type', 'lmsfc_anchor')
+        feature_by_model.setdefault(mt, {'points': []})
+        feature_by_model[mt]['points'].append({
+            'avg_bpp': xbpp,
+            'map50': ymap,
+            'checkpoint': l.get('checkpoint'),
+            'run_dir': d.get('__run_dir'),
+            'source': d.get('__source_file'),
+        })
+    return feature_by_model
+
+def load_vtm_image_compression_point(vtm_dirs: List[Path]) -> Dict[str, Dict[str, Any]]:
+    image_by_model: Dict[str, Dict[str, Any]] = {}
+    for ddir in vtm_dirs:
+        try:
+            d = load_vtm_point(ddir)
+        except Exception:
+            continue
+        img = d.get('image_compression', {})
+        if 'avg_bpp' in img and 'map50' in img:
+            try:
+                xbpp = float(img['avg_bpp'])
+                ymap = float(img['map50'])
+                if not (math.isfinite(xbpp) and math.isfinite(ymap)):
+                    continue
+            except Exception:
+                continue
+            mt = img.get('model_type', 'vtm_image_anchor')
+            image_by_model.setdefault(mt, {'points': [], 'by_ckpt': {}})
+            ckpt = img.get('checkpoint') or f"{d.get('__run_dir')}/vtm"
+            if ckpt not in image_by_model[mt]['by_ckpt']:
+                pt = {
+                    'avg_bpp': xbpp,
+                    'map50': ymap,
+                    'run_dir': d.get('__run_dir'),
+                    'source': d.get('__source_file'),
+                }
+                image_by_model[mt]['by_ckpt'][ckpt] = pt
+                image_by_model[mt]['points'].append(pt)
+    return image_by_model
+
+def merge_points(files: List[Path], vtm_dirs: List[Path]) -> Dict[str, Any]:
+    # Single raw baseline (take the first found; they should be identical across runs)
+    raw_map_value: float = load_raw_point(files)
+    image_by_model: Dict[str, Dict[str, Any]] = load_image_compression_point(files)
+    feature_by_model: Dict[str, Dict[str, Any]] = load_feature_compression_point(files)
+
+    # VTM image anchor points
+    image_by_model.update(load_vtm_image_compression_point(vtm_dirs))
 
     # Fit lines per model type
     for mt, bundle in image_by_model.items():
         pts = [(p['avg_bpp'], p['map50']) for p in bundle['points']]
-        a, b = linear_fit(pts)
-        image_by_model[mt]['fit'] = {'a': a, 'b': b}
+        try:
+            a, b = linear_fit(pts)
+            image_by_model[mt]['fit'] = {'a': a, 'b': b}
+        except Exception:
+            logging.warning(f'Failed to fit linear model for {mt}')
+            logging.warning(f'Points: {pts}')
+            pass
 
     for mt, bundle in feature_by_model.items():
         pts_source = bundle['points']
@@ -167,7 +296,8 @@ def plot_merged(merged: Dict[str, Any], out_path: Path) -> None:
     map_raw = merged.get('raw', {}).get('map50')
     if map_raw is not None:
         ax.axhline(y=map_raw, color='gray', linestyle='--', linewidth=1.5, label=f'Raw baseline (mAP@0.5={map_raw:.3f})')
-
+        new_lossness_map = 0.9 * map_raw
+        ax.axhline(y=new_lossness_map, color='green', linestyle='--', linewidth=1.5, label=f'Near-lossless baseline (mAP@0.5={new_lossness_map:.3f})')
     # Consistent colors per (category, model_type)
     color_cycle = plt.rcParams['axes.prop_cycle'].by_key().get('color', ['C0','C1','C2','C3','C4','C5','C6','C7','C8','C9'])
     color_map: Dict[Tuple[str, str], str] = {}
@@ -219,21 +349,54 @@ def plot_merged(merged: Dict[str, Any], out_path: Path) -> None:
 
 
 def main():
-    parser = argparse.ArgumentParser(description='Merge multiple pipeline RD summaries and plot combined BPP vs mAP@0.5')
-    parser.add_argument('--inputs', nargs='+', required=True, help='Paths to summary.json files or run directories to search')
-    parser.add_argument('--pattern', type=str, default='bpp_vs_map50.json', help='Filename pattern to search within directories')
+    parser = argparse.ArgumentParser(description='Merge pipeline RD summaries and optional VTM anchor results to plot BPP vs mAP@0.5')
+    parser.add_argument('--inputs', nargs='*', default=None, help='Pipeline summary roots to search (e.g., evaluation_results/pipeline)')
+    # Directories containing VTM image anchor outputs (each must have metadata.json and preds.json)
+    parser.add_argument('--vtm_image_anchor_dir', nargs='*', default=None, help='Directories containing VTM image anchor outputs (each must have metadata.json and preds.json)')
+    # Allow passing precomputed feature anchor summary files directly
+    parser.add_argument('--vtm_feature_anchor_files', nargs='*', default=None, help='One or more feature-anchor summary files (summary/bpp_vs_map50.json)')
+    parser.add_argument('--pattern', type=str, default='bpp_vs_map50.json', help='Filename pattern to search within pipeline run directories')
+    parser.add_argument('--lmsfc_feature_anchor_dir', nargs='*', default=None, help='Directories containing L-MSFC anchor runs (we will search for summary/bpp_vs_map50.json)')
     parser.add_argument('--out_json', type=str, required=True, help='Output JSON file for merged anchors')
     parser.add_argument('--out_plot', type=str, required=True, help='Output PNG file for merged plot')
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-    files = find_summary_files(args.inputs, args.pattern)
-    if not files:
-        raise SystemExit(f'No summary files found matching pattern {args.pattern} in {args.inputs}')
-    logging.info(f'Found {len(files)} summary files')
+    # Collect pipeline summary files
+    files: List[Path] = find_summary_files(args.inputs, args.pattern) if args.inputs else []
 
-    merged = merge_points(files)
+    # Include any explicit feature-anchor summary files
+    if args.vtm_feature_anchor_files:
+        for f in args.vtm_feature_anchor_files:
+            p = Path(f)
+            if p.exists() and p.is_file():
+                files.append(p)
+            else:
+                logging.warning(f"Feature-anchor summary not found or not a file: {f}")
+    # Include any explicit L-MSFC feature-anchor summary files
+    lmsfc_files: List[Path] = []
+    # From directories: find all matching summaries
+    if args.lmsfc_feature_anchor_dir:
+        lmsfc_dir_files = find_summary_files(args.lmsfc_feature_anchor_dir, args.pattern)
+        lmsfc_files.extend(lmsfc_dir_files)
+    # De-duplicate
+    lmsfc_files = sorted(list(dict.fromkeys(lmsfc_files)))
+    # De-duplicate files
+    files = sorted(list(dict.fromkeys(files)))
+
+    # Resolve image anchor dirs
+    vtm_image_dirs: List[Path] = find_vtm_image_anchor_dirs(args.vtm_image_anchor_dir) if args.vtm_image_anchor_dir else []
+
+    if not files and not vtm_image_dirs:
+        raise SystemExit('No inputs found. Provide --inputs (pipeline summaries) and/or --vtm_image_anchor_dir (image anchors) and/or --vtm_feature_anchor_files (feature anchors).')
+    logging.info(f'Found {len(files)} pipeline/feature summary files and {len(vtm_image_dirs)} VTM image anchor runs')
+
+    merged = merge_points(files, vtm_image_dirs)
+    # Merge in L-MSFC points under feature category
+    if lmsfc_files:
+        lmsfc_pts = load_lmsfc_feature_anchor_point(lmsfc_files)
+        merged.setdefault('feature', {}).setdefault('by_model', {}).update(lmsfc_pts)
 
     out_json = Path(args.out_json)
     out_json.parent.mkdir(parents=True, exist_ok=True)

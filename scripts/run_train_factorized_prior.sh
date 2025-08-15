@@ -1,1 +1,1 @@
-python train_factorized_prior.py --config configs/factorized_prior.yaml
+python src/train_factorized_prior.py --config configs/train_factorized_prior.yaml

@@ -47,9 +47,9 @@ def train_one_epoch(model, train_loader, optimizer, lmbda, device, log_interval)
         x_hat = out['x_hat']
         likelihoods = out['likelihoods']
 
-        # Compute rate (bits per pixel)
-        n_pixels = x.size(2) * x.size(3)
-        bpp = -torch.log2(likelihoods).sum() / (n_pixels * x.size(0))
+        # Compute rate (bits per pixel), normalized over batch and spatial dims
+        num_pixels = x.size(0) * x.size(2) * x.size(3)
+        bpp = -torch.log2(likelihoods).sum() / num_pixels
 
         # Compute distortion (mean squared error)
         mse = torch.mean((x - x_hat).pow(2))
@@ -88,8 +88,8 @@ def validate(model, val_loader, lmbda, device):
             x_hat = out['x_hat']
             likelihoods = out['likelihoods']
 
-            n_pixels = x.size(2) * x.size(3)
-            bpp = -torch.log2(likelihoods).sum() / (n_pixels * x.size(0))
+            num_pixels = x.size(0) * x.size(2) * x.size(3)
+            bpp = -torch.log2(likelihoods).sum() / num_pixels
             mse = torch.mean((x - x_hat).pow(2))
             loss = mse + lmbda * bpp
 

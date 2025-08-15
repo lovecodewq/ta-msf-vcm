@@ -48,27 +48,9 @@ def main():
     model.load_state_dict(checkpoint['model_state_dict'])
     model.eval()
 
-    # Build deterministic resize transform from compression checkpoint (test_transforms)
-    test_tf_cfg = checkpoint['config']['data'].get('test_transforms', {})
-    force_resize = None
-    if args.force_resize:
-        try:
-            h, w = [int(v) for v in args.force_resize.split(',')]
-            force_resize = (h, w)
-            logging.info(f"Forcing resize to {force_resize} for batchability")
-        except Exception:
-            raise ValueError("--force_resize must be 'H,W', e.g., 384,1280")
-
-    if force_resize is not None:
-        # Build a minimal transform: Resize -> ToTensor (no normalization)
-        image_tf = T.Compose([T.Resize(force_resize), T.ToTensor()])
-    else:
-        # Prefer checkpoint's test transforms if present, else default to ToTensor only
-        if not test_tf_cfg or not test_tf_cfg.get('resize', {}).get('enabled', False):
-            logging.info('Using no-resize ToTensor() for image compression inputs (will compress at native size).')
-            image_tf = T.Compose([T.ToTensor()])
-        else:
-            image_tf = create_transforms(test_tf_cfg, split='val')
+    # Always use ToTensor-only (no resize) to preserve native geometry
+    logging.info('Using ToTensor-only (no resize) for image compression inputs (compress at native size).')
+    image_tf = to_tensor_only
 
     # Dataset: resized tensors for stackable batches
     dataset = KITTIDetectionDataset(
