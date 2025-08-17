@@ -1,174 +1,115 @@
-# Neural Image Compression with Detection Models
+## TA-MSF-VCM
 
-This project implements learned image compression models with support for both standard image compression and feature-level compression for object detection pipelines. The project includes multiple architectures and training modes.
+Task-aware multi-scale feature compression for Visual Coding for Machines (VCM). This repo contains training and evaluation code for compressing features from an object detection backbone (FPN) and comparing against image/feature codec anchors (VTM) and a third-party L-MSFC baseline on the KITTI dataset.
 
-## 🎯 Project Overview
+### Features
+- **Anchors**: VTM image anchor, VTM feature anchor, and L-MSFC feature compressor.
+- **Reproducible scripts**: Shell scripts for training, evaluation, RD plotting, and results merging.
 
-This repository contains:
-- **Standard Image Compression**: Factorized Prior model for end-to-end image compression
-- **Detection Model Training**: Faster R-CNN training on KITTI dataset  
-- **FPN Feature Compression**: Compress intermediate FPN features for detection pipelines
-- **Comprehensive Evaluation**: Rate-distortion analysis and performance metrics
-- **Training Management**: Advanced logging and experiment tracking utilities
+## Setup
 
-## 📁 Project Structure
+### Requirements
+- Python 3.9+
+- PyTorch 2.0+ and TorchVision 0.15+
 
-```
-.
-├── src/
-│   ├── model/
-│   │   ├── factorized_prior.py                    # Standard image compression
-│   │   ├── factorized_prior_features_compression.py  # FPN feature compression
-│   │   ├── detection.py                           # Detection model wrapper
-│   │   └── gdn.py                                 # GDN layers
-│   ├── data/
-│   │   ├── kitti_dataset.py                       # KITTI detection dataset
-│   │   ├── transforms.py                          # Data augmentation
-│   │   └── __init__.py                            # Dataset implementations
-│   ├── utils/
-│   │   ├── logging_utils.py                       # Training logging utilities
-│   │   ├── list_training_runs.py                  # Experiment management
-│   │   ├── metrics.py                             # Evaluation metrics
-│   │   └── paths.py                               # Path utilities
-│   ├── evaluation/                                # Evaluation scripts
-│   ├── train_detection.py                         # Detection model training
-│   ├── train_factorized_prior.py                  # Standard compression training
-│   ├── train_factorized_prior_features_compression.py  # FPN compression training
-│   └── data_preprocess.py                         # Data preprocessing
-├── configs/                                       # Training configurations
-├── docs/                                          # Detailed documentation
-├── tests/                                         # Unit tests
-├── checkpoints/                                   # Model checkpoints
-└── data/                                          # Dataset storage
-```
-
-## 🚀 Quick Start
-
-### 1. Installation
+Install Python dependencies:
 
 ```bash
-git clone [repository-url]
-cd image_compress
 pip install -r requirements.txt
 ```
 
-### 2. Choose Your Training Mode
+Optional: VTM binaries are needed for the VTM anchors (see scripts for expected paths). L-MSFC code is vendored under `thirparty/L-MSFC`.
 
-#### **Detection Model Training**
-```bash
-python src/train_detection.py --config configs/train_detection.yaml
-```
+## Data
 
-#### **Standard Image Compression**
-```bash
-python src/train_factorized_prior.py --config configs/train_factorized_prior.yaml
-```
+This repo uses KITTI detection. Prepare processed images/lists according to your setup and update paths in the YAML configs under `configs/`.
 
-#### **FPN Feature Compression**
-```bash
-python src/train_factorized_prior_features_compression.py --config configs/train_factorized_prior_fpn.yaml
-```
+- Expected root (example): `data/processed/kitti`
+- Train/val/test lists are referenced in `configs/*.yaml`
 
-### 3. Monitor Training
+## Quickstart
+
+1. Preprocess KITTI into train/val/test splits
 
 ```bash
-# List all training runs
-python src/utils/list_training_runs.py
-
-# View specific run details
-python src/utils/list_training_runs.py --show-details path/to/run_directory
+python src/data_preprocess.py
 ```
 
-## 📚 Documentation
-
-| Topic | Description | Link |
-|-------|-------------|------|
-| **Training Management** | Logging, experiment tracking, avoiding overwrites | [docs/TRAINING_LOGS.md](docs/TRAINING_LOGS.md) |
-| **Detection Training** | KITTI dataset, Faster R-CNN setup | [docs/DETECTION_TRAINING.md](docs/DETECTION_TRAINING.md) |
-| **FPN Compression** | Feature-level compression for detection | [docs/FPN_COMPRESSION.md](docs/FPN_COMPRESSION.md) |
-| **Evaluation** | Rate-distortion analysis, metrics | [docs/EVALUATION.md](docs/EVALUATION.md) |
-
-## 🏗️ Model Architectures
-
-### 1. **Factorized Prior Compression**
-End-to-end image compression optimizing rate-distortion trade-off
-- Analysis/synthesis transforms
-- Entropy bottleneck for quantization
-- Lambda-based rate control
-
-### 2. **Detection Models** 
-Faster R-CNN with ResNet50 FPN backbone
-- KITTI dataset support
-- Mixed precision training
-- Comprehensive evaluation metrics
-
-### 3. **FPN Feature Compression**
-Compress intermediate FPN features while preserving detection performance
-- Feature-level rate-distortion optimization
-- Detection pipeline integration
-- Specialized entropy modeling
-
-## ⚙️ Key Features
-
-- **🔄 No Log Overwriting**: Unique timestamped directories for each training run
-- **📊 Comprehensive Metrics**: PSNR, MS-SSIM, mAP, rate-distortion curves
-- **🎛️ Flexible Configuration**: YAML-based configuration system
-- **🚀 Mixed Precision**: Optimized training with automatic mixed precision
-- **📈 Advanced Scheduling**: Learning rate scheduling and early stopping
-- **🧪 Testing Suite**: Comprehensive unit tests and utilities
-
-## 📊 Evaluation
+2. Train the object detector on KITTI
 
 ```bash
-# Generate rate-distortion curves
-python src/evaluation/evaluate_compression.py --checkpoint_dir checkpoints/
-
-# Evaluate detection performance
-python src/evaluation/evaluate_detection.py --model_path checkpoints/detection/best_model.pth
+python -m src.train_detection --config configs/train_detection.yaml
 ```
 
-## 🧪 Testing
+3. Train TA-MSF (feature compression with detection loss)
 
 ```bash
-# Run all tests
-python -m pytest tests/
-
-# Test specific component
-python tests/test_logging_utils.py
+bash scripts/run_train_joint_auto_regressive_fused_feature_with_detect_loss.sh
 ```
 
-## 🎯 Experiment Management
+4. Train L-MSFC feature anchor
 
-This project includes advanced experiment tracking:
-- Automatic timestamped run directories
-- Configuration backups for reproducibility  
-- Command argument logging
-- Easy experiment comparison and analysis
+```bash
+bash scripts/run_train_lmsfc_anchor.sh
+```
 
-See [docs/TRAINING_LOGS.md](docs/TRAINING_LOGS.md) for detailed information.
+5. Train image compressor baseline (factorized prior)
 
-## 📋 Requirements
+```bash
+bash scripts/run_train_factorized_prior.sh
+```
 
-- Python 3.8+
-- PyTorch >= 2.0.0
-- torchvision >= 0.15.0
-- PyYAML >= 6.0
-- pytorch-msssim >= 0.2.1
-- matplotlib >= 3.7.0
-- numpy >= 1.24.0
-- tqdm >= 4.65.0
-- Pillow >= 9.5.0
+6. Run end-to-end evaluation pipeline
 
-## 🏆 Results
+```bash
+bash scripts/run_full_eval.sh
+```
 
-*Benchmark results and comparisons will be added as experiments complete.*
+7. Plot and aggregate results
 
-## 📖 References
+```bash
+python -m src.evaluation.visualize_results --help
+python -m src.evaluation.merge_rd_results --help
+```
 
-- Ballé, J., et al. (2017). End-to-end optimized image compression. ICLR 2017.
-- Ballé, J., et al. (2018). Variational image compression with a scale hyperprior. ICLR 2018.
-- Ren, S., et al. (2015). Faster R-CNN: Towards real-time object detection. NIPS 2015.
+Notes:
+- The detection checkpoint used for FPN-based training defaults to `checkpoints/detection/run_0.002000_16/best_model.pth` (override via script args/env).
+- Edit `configs/*.yaml` to match your data and paths.git 
 
-## 📝 License
+### VTM anchors
 
-[Specify your license here]
+- Image anchor:
+
+```bash
+bash scripts/run_vtm_imager_anchor.sh both
+```
+
+- Feature anchor:
+
+```bash
+bash scripts/run_vtm_feature_anchor.sh
+```
+
+Configure encoder/decoder binaries and cfg paths via environment variables at the top of each script if needed.
+
+## Repository structure
+
+- `src/`
+  - `model/`: detection model wrapper and compression models
+  - `utils/`: training utilities, metrics, dataset helpers
+  - `evaluation/`: VTM anchors, evaluation, visualization, RD plotting
+  - Training entry points: `train_factorized_prior.py`, `train_joint_autoregress_prior_fused_feature.py`, `train_joint_autoregress_prior_fused_feature_with_detloss.py`, `train_lmsfc_anchor.py`
+- `configs/`: YAML configs for training/eval
+- `scripts/`: One-click scripts to train/evaluate and aggregate results
+- `checkpoints/`: Saved models and logs (created at runtime)
+- `evaluation_results/`: Outputs from experiments and plots
+- `thirparty/L-MSFC/`: Third-party L-MSFC baseline code
+
+## Tips
+- Some scripts set `MKL_THREADING_LAYER=GNU` to avoid threading issues.
+- Use the provided scripts as references; you can pass custom flags to the underlying Python modules if needed.
+
+## Acknowledgements
+- L-MSFC code is included under `thirparty/L-MSFC`.
+
+
