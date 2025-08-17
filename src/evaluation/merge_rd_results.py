@@ -307,19 +307,22 @@ def plot_merged(merged: Dict[str, Any], out_path: Path) -> None:
             color_map[key] = color_cycle[len(color_map) % len(color_cycle)]
         return color_map[key]
 
-    # Plot image models
-    for mt, bundle in merged.get('image', {}).get('by_model', {}).items():
-        pts = bundle.get('points', [])
-        if not pts:
-            continue
-        # sort by bpp for polyline
-        pts_sorted = sorted(pts, key=lambda p: p['avg_bpp'])
-        x = [p['avg_bpp'] for p in pts_sorted]
-        y = [p['map50'] for p in pts_sorted]
-        color = get_color('image', mt)
-        ax.scatter(x, y, label=f'Image: {mt}', marker='o', color=color)
-        if len(pts_sorted) >= 2:
-            ax.plot(x, y, linestyle='--', alpha=0.8, color=color)
+    # # Plot image models
+    # for mt, bundle in merged.get('image', {}).get('by_model', {}).items():
+    #     pts = bundle.get('points', [])
+    #     if not pts:
+    #         continue
+    #     # sort by bpp for polyline
+    #     pts_sorted = sorted(pts, key=lambda p: p['avg_bpp'])
+    #     x = [p['avg_bpp'] for p in pts_sorted]
+    #     y = [p['map50'] for p in pts_sorted]
+    #     color = get_color('image', mt)
+    #     if mt == 'vtm_image_anchor':
+    #         ax.scatter(x, y, label=f'Image: {mt}', marker='*', color=color)
+    #     else:
+    #         ax.scatter(x, y, label=f'Image: {mt}', marker='o', color=color)
+    #     if len(pts_sorted) >= 2:
+    #         ax.plot(x, y, linestyle='--', alpha=0.8, color=color)
 
     # Plot feature models
     for mt, bundle in merged.get('feature', {}).get('by_model', {}).items():
@@ -334,13 +337,27 @@ def plot_merged(merged: Dict[str, Any], out_path: Path) -> None:
         x = [p['avg_bpp'] for p in pts_sorted]
         y = [p['map50'] for p in pts_sorted]
         color = get_color('feature', mt)
-        ax.scatter(x, y, label=f'Feature: {mt}', marker='s', color=color)
+        # TA-MSF and L-MSFC are the only two feature models that we are interested in
+        if mt == 'fused_feature_with_detection_loss':
+            label = f'Feature: TA-MSF'
+            ax.scatter(x, y, label=label, marker='s', color=color)
+        # elif mt == 'lmsfc_anchor':
+        #     label = f'Feature: L-MSFC'
+        #     ax.scatter(x, y, label=label, marker='s', color=color)
+        # elif mt == 'vtm_feature_anchor':
+        #     label = f'Feature: VTM-Anchor'
+        #     ax.scatter(x, y, label=label, marker='*', color=color)
+        elif mt == 'fused_feature':
+            label = f'Feature: TA-MSF w/o det loss'
+            ax.scatter(x, y, label=label, marker='s', color=color)
+        else:
+            continue
         if len(pts_sorted) >= 2:
             ax.plot(x, y, linestyle='--', alpha=0.8, color=color)
 
     ax.set_xlabel('Bits Per Pixel (avg)')
     ax.set_ylabel('mAP@0.5')
-    ax.set_title('Merged BPP vs mAP@0.5')
+    ax.set_title('BPP vs mAP@0.5')
     ax.grid(True, linestyle='--', alpha=0.6)
     ax.legend()
     out_path.parent.mkdir(parents=True, exist_ok=True)

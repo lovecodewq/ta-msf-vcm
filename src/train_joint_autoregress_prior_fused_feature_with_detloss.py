@@ -295,6 +295,7 @@ def main():
 
     for epoch in range(config['training']['epochs']):
         det_w_eff = det_w if epoch >= no_det_epochs else 0.0
+        detection_enabled = epoch >= no_det_epochs
         tr_total, tr_rd, tr_det, tr_ratio, tr_mse = train_one_epoch(
             comp_model, det_model, optimizer, lmbda, det_w_eff, device, train_loader, config['training']['log_interval'], grad_clip,
             feature_cache_dir=(cache_dir if use_cache else None)
@@ -311,18 +312,36 @@ def main():
             f"ratio(det/rd)(tr/va)=({tr_ratio:.3f}/{va_ratio:.3f}) det_w_eff={det_w_eff:.3f}"
         )
 
-        if scheduler:
-            scheduler.step(va_total)
+        # During warmup (no detection loss), skip scheduler, best-model saving, and early stopping
+        if not detection_enabled:
+            logging.info('Warmup epoch (detection loss disabled): skipping LR scheduling, best-model comparison, and early stopping')
+            continue
 
-        if va_total < best_val:
+        # First epoch with detection loss enabled: reset baselines and early stopping
+        if epoch == no_det_epochs:
             best_val = va_total
             save_best_model(save_dir, epoch, comp_model, optimizer, scheduler, best_val, config)
+            if early_stopping:
+                early_stopping = EarlyStopping(
+                    patience=config['training']['early_stopping']['patience'],
+                    min_delta=config['training']['early_stopping']['min_delta'],
+                )
+            # Start scheduler from here
+            if scheduler:
+                scheduler.step(va_total)
+        else:
+            if scheduler:
+                scheduler.step(va_total)
 
-        if early_stopping:
-            early_stopping(va_total)
-            if early_stopping.early_stop:
-                logging.info('Early stopping triggered')
-                break
+            if va_total < best_val:
+                best_val = va_total
+                save_best_model(save_dir, epoch, comp_model, optimizer, scheduler, best_val, config)
+
+            if early_stopping:
+                early_stopping(va_total)
+                if early_stopping.early_stop:
+                    logging.info('Early stopping triggered')
+                    break
 
     logging.info('Training completed')
 
